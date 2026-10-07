@@ -1,0 +1,93 @@
+// Phase 1 data layer.
+// All price fields are strings: providers return decimal strings and we store them
+// verbatim, so no float rounding is introduced (works the same on SQLite and Postgres).
+// All DateTime columns are UTC.
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Candle {
+  id         String   @id @default(cuid())
+  symbol     String
+  timeframe  String
+  openTime   DateTime
+  open       String
+  high       String
+  low        String
+  close      String
+  volume     String?
+  provider   String
+  ingestedAt DateTime @default(now())
+
+  @@unique([symbol, timeframe, openTime])
+  @@index([symbol, timeframe])
+}
+
+model CalendarEvent {
+  id           String   @id @default(cuid())
+  externalId   String   @unique
+  title        String
+  country      String
+  currency     String
+  impact       String // low | medium | high
+  scheduledAt  DateTime
+  actual       String?
+  forecast     String?
+  previous     String?
+  source       String
+  affectedPairs Json // Pair[] — e.g. ["EURUSD","GBPUSD"]
+  ingestedAt   DateTime @default(now())
+
+  @@index([scheduledAt])
+}
+
+model NewsItem {
+  id          String   @id @default(cuid())
+  url         String   @unique
+  source      String
+  title       String
+  summary     String
+  rawText     String
+  publishedAt DateTime
+  currencies  Json // string[] e.g. ["USD"]
+  pairTags    Json // Pair[] e.g. ["EURUSD","XAUUSD"]
+  impactScore Int // 0-100
+  ingestedAt  DateTime @default(now())
+
+  @@index([publishedAt])
+}
+
+model IngestRun {
+  id         String    @id @default(cuid())
+  kind       String // price | calendar | news
+  status     String // running | success | partial | failed
+  startedAt  DateTime
+  finishedAt DateTime?
+  error      String?
+  stats      Json? // { fetched, inserted, updated, skipped, failedCalls, errors, provider, mock }
+
+  @@index([kind, startedAt])
+}
+
+// Phase 2 fundamental bias snapshots. Kept per pair; capped at MAX_SNAPSHOTS_PER_PAIR.
+model BiasSnapshot {
+  id        String   @id @default(cuid())
+  pair      String // EURUSD | GBPUSD | USDJPY | XAUUSD
+  bias      String // bullish | bearish | mixed | neutral
+  confidence Int    // 0-100
+  drivers   Json     // [{ type: "news" | "calendar", text: string }]
+  nextEvent Json?    // { title, scheduledAt, currency, impact, forecast, previous, actual } | null
+  invalidation String
+  method    String   // rules-v1
+  usedLlm   Boolean
+  asOf      DateTime
+  createdAt DateTime @default(now())
+
+  @@unique([pair, asOf])
+  @@index([pair, createdAt])
+}
