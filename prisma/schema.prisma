@@ -65,7 +65,7 @@ model NewsItem {
 model IngestRun {
   id         String    @id @default(cuid())
   kind       String // price | calendar | news
-  status     String // running | success | partial | failed
+  status     String // running | success | partial | failed | skipped
   startedAt  DateTime
   finishedAt DateTime?
   error      String?

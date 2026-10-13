@@ -2,7 +2,7 @@ import type { Pair, Timeframe } from "./universe";
 
 export type Impact = "low" | "medium" | "high";
 export type IngestKind = "price" | "calendar" | "news";
-export type IngestStatus = "running" | "success" | "partial" | "failed";
+export type IngestStatus = "running" | "success" | "partial" | "failed" | "skipped";
 
 /** Normalized candle. Prices are decimal strings exactly as received/generated. */
 export type CandleInput = {

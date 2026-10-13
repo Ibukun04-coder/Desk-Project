@@ -9,14 +9,16 @@ no signals, and no user accounts — by design.
 - Ingests & stores OHLC candles for `EURUSD, GBPUSD, USDJPY, XAUUSD` × `M15, H1, H4, D1`,
   upserted by the unique key `(symbol, timeframe, openTime)` — never duplicated.
 - Ingests & stores an economic calendar (NFP, CPI, FOMC/rate decisions, GDP, unemployment,
-  PMI) with country/currency → affected-pairs mapping.
+  PMI) with country/currency → affected-pairs mapping (`USD` → all four pairs, `EUR` →
+  EURUSD, `GBP` → GBPUSD, `JPY` → USDJPY; other countries ignored), high/medium impact only.
 - Ingests & stores tagged news from an **allow-list of sources** only (central-bank RSS:
   Fed, ECB, BoE, BoJ — plus Finnhub/NewsAPI when keyed), deduplicated by `url` and by
   `(source, title, publishedAt)`.
 - Exposes typed, Zod-validated read APIs that later phases will consume.
 - **Survives slow/down feeds**: reads always come from the database, so the app serves the
   last stored data when a provider fails. Failures are recorded in `IngestRun`.
-- Runs with **zero API keys** in deterministic mock mode (candles + sample calendar + sample news).
+- Runs with **zero API keys**: the economic calendar comes from a public keyless
+  feed (faireconomy) while price/news run in deterministic mock mode.
 
 ## Stack
 
@@ -58,30 +60,55 @@ The runner is idempotent, rate-limits provider calls (per-provider delays in
 `IngestRun` row per attempt, and logs `fetched / inserted / updated / skipped / failed`.
 Partial failure never deletes existing rows.
 
-## Live data (keys optional — mock is the default)
+Price ingest is serialised: a previous price run still `running` is **reaped after
+5 minutes** as `failed` ("worker presumed dead"), and a second price ingest will not
+start while one is active — it returns a `skipped` run instead of overlapping.
 
-Free keys:
+## Live data (calendar needs no key; price/news keys optional)
+
+Providers:
+- **Calendar — faireconomy (default, keyless).** Public ForexFactory weekly XML:
+  `ff_calendar_thisweek.xml`, falling back to `ff_calendar_nextweek.xml` when the
+  first URL fails. **High and medium impact only**; title, country/currency,
+  date, time, forecast, previous and actual are parsed and stored in **UTC**
+  (feed times are US/Eastern wall-clock, converted with deterministic US-DST
+  math — no new dependency). Upserted by a stable `externalId`
+  (`currency + title + scheduled time`), so re-ingest is idempotent
+  (`inserted=0, skipped>0`) and a failed fetch never deletes stored rows.
+- **Calendar — finnhub (optional).** `CALENDAR_PROVIDER=finnhub` needs
+  `FINNHUB_API_KEY`. Note: the free Finnhub tier returns **HTTP 403** on the
+  calendar endpoint — the run is marked failed and keeps serving stored rows
+  (it does **not** silently fall back to faireconomy or to the seed).
+- **Calendar — mock** only when `CALENDAR_PROVIDER=mock` is set deliberately.
 - Twelve Data (price): https://twelvedata.com — free plan covers forex time_series.
-- Finnhub (calendar + news): https://finnhub.io — free plan covers the economic
-  calendar and general news.
+- Finnhub (news) + NewsAPI (general business headlines): https://finnhub.io.
 
 Env vars (in `.env`, never committed — `.env` is gitignored):
 ```
 PRICE_PROVIDER=twelvedata
 TWELVEDATA_API_KEY=<your key>   # empty → price stays mock even with PRICE_PROVIDER=twelvedata
-FINNHUB_API_KEY=<your key>      # enables live calendar; enables live news via NEWS_PROVIDER
 NEWS_PROVIDER=finnhub           # or "mock" to force mock news despite a Finnhub key
+FINNHUB_API_KEY=<your key>      # enables live news
+NEWS_API_KEY=<your key>         # optional general-headline source
+CALENDAR_PROVIDER=faireconomy   # default (no key) | finnhub (needs FINNHUB_API_KEY) | mock
 ```
 Restart `npm run dev` after editing `.env` (env is read at boot).
 
 Behaviour:
-- Each feed resolves independently: a keyed feed runs live, a keyless feed stays
-  mock, and Data Health names each feed (`twelvedata` / `finnhub` / `mock`) with
-  a LIVE/MOCK badge plus the last error string — never one blanket label.
+- Each feed resolves independently and Data Health names each feed with its own
+  badge plus the last error string — never one blanket label:
+  `twelvedata` / `finnhub+rss` / **`faireconomy`** / `mock`, each **LIVE**, **MOCK**
+  or **UNAVAILABLE**. A feed configured live whose latest run **failed** reads
+  UNAVAILABLE (rose) and the page refuses to claim "All feeds live".
+- Last stored rows always keep serving after a failure; the failure itself is
+  visible on the `IngestRun` (e.g. `finnhub-calendar: HTTP 403`).
+- **Seeded sample rows are never dressed up as live.** Calendar rows with
+  `source="mock"` carry an amber **SAMPLE** chip in Data Health, and are excluded
+  from bias scoring / next-event selection whenever the calendar feed is live
+  **or** its latest run failed. News rows with `source="mock"` or a `[MOCK]`
+  title prefix are likewise excluded from bias scoring.
 - `/bias` and `/pair` show LIVE or MOCK per section (price vs news); live
-  candles are never labelled mock.
-- A failed live call logs on its `IngestRun`, keeps last stored rows, and never
-  invents prices or headlines. If free Finnhub news yields no tagged forex
+  candles are never labelled mock. If free Finnhub news yields no tagged forex
   items, news stays on mock and the banner says so (no scraping).
 - Warn: free tiers are delayed and rate-limited (Twelve Data free ≈ 8 req/min —
   a full 16-call price ingest takes ~2 min); not for live order execution.
@@ -105,9 +132,34 @@ only at the UI edge).
 
 Deterministic per-pair bias scored from **stored** news + calendar rows (no fresh fetch,
 no LLM required). Currency legs per pair (`EURUSD/GBPUSD/USDJPY/XAUUSD`, USD leg
-inverted via base-minus-quote); news tagged hawkish/dovish/risk-on/risk-off; recency
-decay (24h full, 24–72h half, older ignored); high/medium calendar events within 48h
-adjust confidence; snapshots capped at 20/pair.
+inverted via base-minus-quote); recency decay (24h full weight, 24h–7d half, older
+ignored); high/medium calendar events within ±48h vote on confidence.
+
+Bias reads **live rows only**:
+- News excludes `source="mock"` / `[MOCK]`-prefixed titles. Rows stored before
+  tagging existed (empty `pairTags`) are re-tagged **at read time** from
+  title + summary with the same currency→pair rules as ingest (the database is
+  never mutated).
+- Calendar candidates are the pair's mapped events (`USD` → all four pairs,
+  `EUR` → EURUSD, `GBP` → GBPUSD, `JPY` → USDJPY; other countries ignored), with
+  **seeded sample events hidden** while a live calendar feed exists or its latest
+  run failed.
+- Classifiers in `score-core.ts` are deterministic keyword lists — no LLM:
+  hawkish/dovish (rate hike/cut variants, "hold"/"elevation", inflation-fighting,
+  yields), risk-on/risk-off (risk sentiment, safe-haven, haven demand, dollar
+  demand), macro-surprise context ("CPI hotter than expected"), per-currency FX
+  and gold moves ("yen slides", "gold climbs"), and negation stripping so
+  "no rate cut" is not dovish.
+- A live driver always beats a mock one. When a pair stays neutral, the card
+  still lists 2–3 **real stored headlines that were considered** with source and
+  UTC time — never a bare "no drivers", and never "(mock)" drivers while live
+  rows exist.
+- `nextEvent` is the **soonest future high-impact** event mapped to the pair
+  (from the faireconomy rows in practice); it stays visible beyond the ±48h
+  voting window. The playbook `event_window` rule uses this same field, so a
+  high-impact event within 30 minutes still blocks a grade-A setup.
+- Snapshots are capped at 20/pair and reads dedupe to the newest snapshot per
+  pair, so a stale row can never shadow a newer one.
 
 ```
 GET  /api/bias              → { pairs: BiasResult[], providers, llmActive }
@@ -184,6 +236,10 @@ also rejects it); a `downgrade` caps A at B. B otherwise stays B.
   (`originalGrade`, `finalGrade`, `fired[]`) — raw SMC detection unchanged.
 - APIs: `GET/POST /api/playbook`, `PATCH/DELETE /api/playbook/[id]`
   (Zod-validated, 400 on bad body, no auth).
+- `event_window` reads `bias.nextEvent` (the soonest future high-impact calendar
+  event mapped to the pair) — a high-impact event inside 30 minutes blocks a
+  grade-A setup. With the faireconomy calendar that is a real upcoming event,
+  never the seeded sample.
 - `/playbook` lists the 5 seeded rules with enable toggle, edit, delete, plus
   an add-rule form with a closed kind dropdown (no arbitrary code, no eval).
 - How to add a rule: open `/playbook`, fill title + one-sentence body, pick
@@ -195,7 +251,10 @@ also rejects it); a `downgrade` caps A at B. B otherwise stays B.
 - `Candle` — unique `(symbol, timeframe, openTime)`
 - `CalendarEvent` — unique `externalId`, `affectedPairs` JSON
 - `NewsItem` — unique `url`, `currencies`/`pairTags` JSON, `impactScore` 0–100
-- `IngestRun` — `kind`, `status`, timings, `error`, `stats` JSON
+- `IngestRun` — `kind`, `status` (`running | success | partial | failed | skipped`),
+  timings, `error`, `stats` JSON
+- `CalendarEvent` / `NewsItem` also carry `source` (`faireconomy`, `finnhub`,
+  `rss`, `mock` for seed rows) so mock rows can be labelled and excluded.
 - `PlaybookRule` — Phase 4a written rules (severity, appliesTo, whenJson, sortOrder)
 
 Prices are stored as **strings** (providers return decimal strings; stored verbatim — no

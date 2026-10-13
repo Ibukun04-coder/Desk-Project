@@ -24,6 +24,9 @@ const CALENDAR_LOOKAHEAD_DAYS = 14;
 const NEWS_FETCH_LIMIT = 100;
 const MAX_STORED_ERRORS = 10;
 const UPSERT_CHUNK = 400;
+// A price run stuck in "running" past this age is presumed dead (server restart,
+// crash) and is reaped as failed so it can never block future ingests forever.
+const PRICE_RUN_TIMEOUT_MS = 5 * 60_000;
 
 function emptyStats(): IngestStats {
   return { fetched: 0, inserted: 0, updated: 0, skipped: 0, failedCalls: 0, errors: [] };
@@ -405,8 +408,48 @@ function newsUpdateData(item: NewsItemInput) {
 
 // --- Runners -------------------------------------------------------------------
 
+/**
+ * One live price universe ingest at a time: reap price runs stuck in "running"
+ * past the timeout (dead worker), and refuse to start a second overlapping run.
+ * Returns the active run to report, or null when it is safe to ingest.
+ */
+async function claimPriceRun(): Promise<{ runId: string; startedAt: Date } | null> {
+  const cutoff = new Date(Date.now() - PRICE_RUN_TIMEOUT_MS);
+  const reaped = await prisma.ingestRun.updateMany({
+    where: { kind: "price", status: "running", startedAt: { lt: cutoff } },
+    data: {
+      status: "failed",
+      finishedAt: new Date(),
+      error: `price ingest timed out after ${PRICE_RUN_TIMEOUT_MS / 60_000} minutes (worker presumed dead)`,
+    },
+  });
+  if (reaped.count > 0) {
+    console.warn(`[desk] reaped ${reaped.count} stale price ingest run(s) older than 5 minutes`);
+  }
+  const active = await prisma.ingestRun.findFirst({
+    where: { kind: "price", status: "running" },
+    orderBy: { startedAt: "desc" },
+  });
+  return active ? { runId: active.id, startedAt: active.startedAt } : null;
+}
+
 export async function runPriceIngest(): Promise<IngestResult> {
   const provider = getPriceProvider();
+  const active = await claimPriceRun();
+  if (active) {
+    const message = `price ingest already running (started ${active.startedAt.toISOString()}) — skipped to avoid overlap`;
+    console.warn(`[desk] ${message}`);
+    return {
+      runId: active.runId,
+      kind: "price",
+      status: "skipped",
+      provider: provider.name,
+      mock: provider.isMock,
+      startedAt: active.startedAt.toISOString(),
+      finishedAt: new Date().toISOString(),
+      stats: { ...emptyStats(), errors: [message] },
+    };
+  }
   const startedAt = new Date();
   const runId = await startRun("price");
   const stats = emptyStats();

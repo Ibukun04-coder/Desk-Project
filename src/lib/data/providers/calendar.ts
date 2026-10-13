@@ -1,9 +1,10 @@
 import { z } from "zod";
-import { getEnv, resolveCalendarProvider } from "../config";
+import { XMLParser } from "fast-xml-parser";
+import { getEnv, logOnce, resolveCalendarProvider } from "../config";
 import { fnv1a } from "../hash";
 import type { CalendarEventInput, CalendarProvider, Impact } from "../types";
 import { COUNTRY_CURRENCY, pairsForCodes } from "../universe";
-import { fetchJsonWithRetry, parseUtcDateTime } from "./http";
+import { fetchJsonWithRetry, fetchTextWithTimeout, parseUtcDateTime } from "./http";
 
 // --- Deterministic mock calendar -------------------------------------------
 // Synthetic recurring macro events keyed by (slug, UTC date) so re-ingests are
@@ -202,10 +203,157 @@ async function fetchFinnhubCalendar(
   return out;
 }
 
+// --- Faireconomy (ForexFactory) weekly XML calendar ---------------------------
+// Public, keyless feed. Times in the feed are US Eastern wall-clock; we convert
+// to UTC with deterministic US DST rules (2nd Sun Mar 2am → 1st Sun Nov 2am).
+// thisweek first; nextweek only as a fetch fallback. A total failure throws so
+// the ingest run is marked failed — never a silent mock fallback.
+
+const FAIRECONOMY_URLS = [
+  "https://nfs.faireconomy.media/ff_calendar_thisweek.xml",
+  "https://nfs.faireconomy.media/ff_calendar_nextweek.xml",
+] as const;
+
+const ffParser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_" });
+
+function ffRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function ffArray(value: unknown): unknown[] {
+  if (value == null) return [];
+  return Array.isArray(value) ? value : [value];
+}
+
+function ffText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number") return String(value);
+  const rec = ffRecord(value);
+  if (rec && typeof rec["#text"] === "string") return rec["#text"];
+  return "";
+}
+
+/** Second Sunday of March / first Sunday of November, 2am local (US DST rules). */
+function dstBoundaries(year: number): { start: number; end: number } {
+  const nthSunday = (month: number, nth: number): number => {
+    const first = new Date(Date.UTC(year, month, 1));
+    const firstDow = first.getUTCDay(); // 0=Sun
+    const firstSunday = 1 + ((7 - firstDow) % 7);
+    return firstSunday + (nth - 1) * 7;
+  };
+  return {
+    start: Date.UTC(year, 2, nthSunday(2, 2), 2), // March, 2nd Sunday, 2am ET
+    end: Date.UTC(year, 10, nthSunday(10, 1), 2), // November, 1st Sunday, 2am ET
+  };
+}
+
+/** Convert an Eastern wall-clock date (MM-DD-YYYY) + time ("12:30pm") to UTC. */
+function easternToUtc(dateText: string, timeText: string): Date | null {
+  const dm = dateText.trim().match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
+  const tm = timeText.trim().toLowerCase().match(/^(\d{1,2}):(\d{2})\s*(am|pm)?$/);
+  if (!dm || !tm) return null;
+  let hour = Number(tm[1]);
+  const minute = Number(tm[2]);
+  const meridiem = tm[3];
+  if (meridiem === "pm" && hour !== 12) hour += 12;
+  if (meridiem === "am" && hour === 12) hour = 0;
+  if (hour > 23 || minute > 59) return null;
+  const year = Number(dm[3]);
+  // Treat the Eastern wall-clock as if it were UTC, then ADD the offset:
+  // EDT is UTC-4, so 12:30pm ET → 16:30Z. (EST → 17:30Z.)
+  const wallUtc = Date.UTC(year, Number(dm[1]) - 1, Number(dm[2]), hour, minute);
+  const { start, end } = dstBoundaries(year);
+  const offsetHours = wallUtc >= start && wallUtc < end ? 4 : 5; // EDT : EST
+  return new Date(wallUtc + offsetHours * 3_600_000);
+}
+
+function ffImpact(raw: string): Impact | null {
+  const v = raw.trim().toLowerCase();
+  if (v === "high") return "high";
+  if (v === "medium") return "medium";
+  return null; // low, holiday, or anything else is dropped
+}
+
+/** Feed "country" holds a currency code (USD/GBP/…) or "All"; map to ours. */
+function ffCurrency(raw: string): string | null {
+  const cc = raw.trim().toUpperCase();
+  const mapped = COUNTRY_CURRENCY[cc];
+  if (mapped) return mapped;
+  if (cc.length === 3 && pairsForCodes([cc]).length > 0) return cc; // already USD/EUR/…
+  return null; // "All", AUD, CAD, … — not in the starter universe
+}
+
+function parseFaireCalendarXml(xml: string): CalendarEventInput[] {
+  const doc = ffRecord(ffParser.parse(xml) as unknown);
+  const weekly = doc ? ffRecord(doc.weeklyevents) : null;
+  const rawEvents = weekly ? ffArray(weekly.event) : [];
+  const out: CalendarEventInput[] = [];
+  for (const raw of rawEvents) {
+    const rec = ffRecord(raw);
+    if (!rec) continue;
+    const title = ffText(rec.title).trim();
+    const currency = ffCurrency(ffText(rec.country));
+    const impact = ffImpact(ffText(rec.impact));
+    if (!title || !currency || !impact) continue;
+    const scheduledAt = easternToUtc(ffText(rec.date), ffText(rec.time));
+    if (!scheduledAt) continue;
+    const affectedPairs = pairsForCodes([currency]);
+    if (affectedPairs.length === 0) continue;
+    // Stable id: currency + title + scheduled time — same event ⇒ same id across weeks.
+    const scheduledKey = scheduledAt.toISOString().slice(0, 16).replace(/[-:T]/g, "");
+    out.push({
+      externalId: `ff-${currency}-${title}-${scheduledKey}`
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 200),
+      title,
+      country: currency,
+      currency,
+      impact,
+      scheduledAt,
+      actual: toStringOrNull(ffText(rec.actual)),
+      forecast: toStringOrNull(ffText(rec.forecast)),
+      previous: toStringOrNull(ffText(rec.previous)),
+      source: "faireconomy",
+      affectedPairs,
+    });
+  }
+  out.sort((a, b) => a.scheduledAt.getTime() - b.scheduledAt.getTime());
+  return out;
+}
+
+async function fetchFaireEconomyCalendar(): Promise<CalendarEventInput[]> {
+  let lastError: unknown = null;
+  for (const url of FAIRECONOMY_URLS) {
+    try {
+      const xml = await fetchTextWithTimeout(url, { timeoutMs: 15_000 });
+      const events = parseFaireCalendarXml(xml);
+      if (events.length === 0) throw new Error("faireconomy-calendar: feed parsed to zero usable events");
+      return events;
+    } catch (err) {
+      lastError = err;
+      logOnce(`[desk] faireconomy-calendar: ${url} failed (${String(err)}) — trying fallback`);
+    }
+  }
+  throw new Error(
+    `faireconomy-calendar: all feeds failed (${lastError instanceof Error ? lastError.message : String(lastError)})`,
+  );
+}
+
 // --- Factory ----------------------------------------------------------------
 
 export function getCalendarProvider(): CalendarProvider {
   const selection = resolveCalendarProvider();
+  if (selection.mode === "live" && selection.name === "faireconomy") {
+    return {
+      name: "faireconomy",
+      isMock: false,
+      fetchEvents: () => fetchFaireEconomyCalendar(),
+    };
+  }
   if (selection.mode === "live") {
     const apiKey = getEnv().FINNHUB_API_KEY ?? "";
     return {

@@ -8,6 +8,7 @@ const envSchema = z.object({
   OANDA_API_KEY: z.string().optional(),
   OANDA_ACCOUNT_ID: z.string().optional(),
   NEWS_PROVIDER: z.enum(["finnhub", "mock"]).optional(),
+  CALENDAR_PROVIDER: z.enum(["faireconomy", "finnhub", "mock"]).optional(),
   NEWS_API_KEY: z.string().optional(),
   FINNHUB_API_KEY: z.string().optional(),
   INGEST_INTERVAL_SECONDS: z.coerce.number().int().positive().default(60),
@@ -78,16 +79,30 @@ export function resolvePriceProvider(): ProviderSelection {
   return { name: "mock", mode: "mock", reason: "no API keys" };
 }
 
-/** Calendar: Finnhub economic calendar when keyed, else deterministic mock. */
+/** Calendar: faireconomy (public weekly XML, no key) by default; finnhub when
+ *  explicitly requested; mock only when asked. A failed fetch marks the ingest
+ *  failed — stored rows keep serving, never a silent mock fallback. */
 export function resolveCalendarProvider(): ProviderSelection {
   const env = getEnv();
-  if (env.FINNHUB_API_KEY) {
-    return { name: "finnhub", mode: "live", reason: "FINNHUB_API_KEY set" };
+  const explicit = env.CALENDAR_PROVIDER;
+  if (explicit === "mock") {
+    return { name: "mock", mode: "mock", reason: "CALENDAR_PROVIDER=mock" };
   }
-  logOnce(
-    "[desk] FINNHUB_API_KEY not set — CALENDAR running in MOCK mode (synthetic high-impact events).",
-  );
-  return { name: "mock", mode: "mock", reason: "no FINNHUB_API_KEY" };
+  if (explicit === "finnhub") {
+    if (env.FINNHUB_API_KEY) {
+      return { name: "finnhub", mode: "live", reason: "CALENDAR_PROVIDER=finnhub" };
+    }
+    logOnce(
+      "[desk] CALENDAR_PROVIDER=finnhub but FINNHUB_API_KEY missing — using faireconomy (no key required).",
+    );
+    return { name: "faireconomy", mode: "live", reason: "finnhub key missing; using faireconomy" };
+  }
+  // Default (and explicit CALENDAR_PROVIDER=faireconomy): keyless public feed.
+  return {
+    name: "faireconomy",
+    mode: "live",
+    reason: explicit === "faireconomy" ? "CALENDAR_PROVIDER=faireconomy" : "default (no key required)",
+  };
 }
 
 /** News: Finnhub when NEWS_PROVIDER=finnhub (default) with a key, else mock.

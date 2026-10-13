@@ -15,6 +15,7 @@ const STATUS_STYLES: Record<string, string> = {
   partial: "bg-amber-500/15 text-amber-400",
   failed: "bg-rose-500/15 text-rose-400",
   running: "bg-sky-500/15 text-sky-400",
+  skipped: "bg-slate-500/15 text-slate-400",
 };
 
 const IMPACT_STYLES: Record<string, string> = {
@@ -43,10 +44,20 @@ export default async function DataHealthPage() {
   ]);
   const events = upcoming.slice(0, 10);
   const modes = health.modes;
-  const mockKinds = (["price", "calendar", "news"] as const).filter(
-    (kind) => modes[kind].mode === "mock",
-  );
   const runsByKind = new Map(health.lastRuns.map((run) => [run.kind, run]));
+  // A feed is "unavailable" when it is keyed for live data but its latest run
+  // failed (e.g. free Finnhub key without calendar access → HTTP 403). Stored
+  // rows keep serving; the feed is simply not ingesting.
+  const feedStatus = (kind: "price" | "calendar" | "news"): "live" | "mock" | "unavailable" => {
+    if (modes[kind].mode === "mock") return "mock";
+    return runsByKind.get(kind)?.status === "failed" ? "unavailable" : "live";
+  };
+  const mockKinds = (["price", "calendar", "news"] as const).filter(
+    (kind) => feedStatus(kind) === "mock",
+  );
+  const unavailableKinds = (["price", "calendar", "news"] as const).filter(
+    (kind) => feedStatus(kind) === "unavailable",
+  );
   const countMap = new Map(
     health.candleCounts.map((c) => [`${c.symbol}|${c.timeframe}`, c.count] as const),
   );
@@ -70,22 +81,32 @@ export default async function DataHealthPage() {
           stored data is served normally if a provider fails.
         </div>
       )}
-      {mockKinds.length === 0 && (
+      {unavailableKinds.length > 0 && (
+        <div className="mt-4 rounded-md border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
+          <strong>Unavailable feeds:</strong> {unavailableKinds.join(", ")} — latest run failed
+          (see Last ingest per kind for the error). Stored rows are still served; no data is
+          deleted on failure.
+        </div>
+      )}
+      {mockKinds.length === 0 && unavailableKinds.length === 0 && (
         <div className="mt-4 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">
           <strong>All feeds live</strong> — price, calendar, and news are ingesting from real providers.
         </div>
       )}
 
       <div className="mt-4 flex flex-wrap gap-2 text-xs">
-        {([["price", "Price"], ["calendar", "Calendar"], ["news", "News"]] as const).map(([kind, label]) => (
-          <span key={kind} className="rounded-full border border-slate-700 bg-slate-900 px-3 py-1 text-slate-300">
-            {label}: <span className="font-semibold">{modes[kind].name}</span>{" "}
-            <span className={modes[kind].mode === "live" ? "text-emerald-400" : "text-amber-300"}>
-              {modes[kind].mode === "live" ? "LIVE" : "MOCK"}
-            </span>{" "}
-            — {modes[kind].reason}
-          </span>
-        ))}
+        {([["price", "Price"], ["calendar", "Calendar"], ["news", "News"]] as const).map(([kind, label]) => {
+          const status = feedStatus(kind);
+          return (
+            <span key={kind} className="rounded-full border border-slate-700 bg-slate-900 px-3 py-1 text-slate-300">
+              {label}: <span className="font-semibold">{modes[kind].name}</span>{" "}
+              <span className={status === "live" ? "text-emerald-400" : status === "unavailable" ? "text-rose-400" : "text-amber-300"}>
+                {status === "live" ? "LIVE" : status === "unavailable" ? "UNAVAILABLE" : "MOCK"}
+              </span>{" "}
+              — {modes[kind].reason}
+            </span>
+          );
+        })}
         <span className="rounded-full border border-slate-700 bg-slate-900 px-3 py-1 text-slate-300">
           interval: {modes.ingestIntervalSeconds}s
         </span>
@@ -213,7 +234,14 @@ export default async function DataHealthPage() {
                       {event.scheduledAt.slice(0, 16).replace("T", " ")}
                     </td>
                     <td className={TD}>{event.title}</td>
-                    <td className={TD}>{event.currency}</td>
+                    <td className={TD}>
+                      {event.currency}
+                      {event.source === "mock" && (
+                        <span className="ml-2 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-amber-400">
+                          SAMPLE
+                        </span>
+                      )}
+                    </td>
                     <td className={TD}>
                       <span className={`rounded px-2 py-0.5 text-xs font-medium ${IMPACT_STYLES[event.impact] ?? ""}`}>
                         {event.impact}
