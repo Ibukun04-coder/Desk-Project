@@ -58,20 +58,34 @@ The runner is idempotent, rate-limits provider calls (per-provider delays in
 `IngestRun` row per attempt, and logs `fetched / inserted / updated / skipped / failed`.
 Partial failure never deletes existing rows.
 
-## Providers (selected via env)
+## Live data (keys optional — mock is the default)
 
-| Kind    | Live when…                         | Sources | Mock when |
-|---------|------------------------------------|---------|-----------|
-| price   | `PRICE_PROVIDER` or any price key  | Twelve Data, Polygon (`api.massive.com`, tickers like `C:EURUSD`), OANDA (practice host) | no price keys / provider key missing |
-| calendar| `FINNHUB_API_KEY`                  | Finnhub economic calendar | no `FINNHUB_API_KEY` |
-| news    | `FINNHUB_API_KEY` or `NEWS_API_KEY`| Finnhub forex news, NewsAPI, central-bank RSS | no news keys |
+Free keys:
+- Twelve Data (price): https://twelvedata.com — free plan covers forex time_series.
+- Finnhub (calendar + news): https://finnhub.io — free plan covers the economic
+  calendar and general news.
 
-Notes:
-- `PRICE_PROVIDER=twelvedata|polygon|oanda|mock`; when unset, the first provider with a key wins.
-- Free-tier rate limits make a full live price universe take ~2–3 minutes (16 calls with
-  inter-call delays). Mock mode is instant.
-- OANDA defaults to the practice host (`api-fxpractice.oanda.com`); live accounts must change
-  the host in `src/lib/data/providers/price.ts`.
+Env vars (in `.env`, never committed — `.env` is gitignored):
+```
+PRICE_PROVIDER=twelvedata
+TWELVEDATA_API_KEY=<your key>   # empty → price stays mock even with PRICE_PROVIDER=twelvedata
+FINNHUB_API_KEY=<your key>      # enables live calendar; enables live news via NEWS_PROVIDER
+NEWS_PROVIDER=finnhub           # or "mock" to force mock news despite a Finnhub key
+```
+Restart `npm run dev` after editing `.env` (env is read at boot).
+
+Behaviour:
+- Each feed resolves independently: a keyed feed runs live, a keyless feed stays
+  mock, and Data Health names each feed (`twelvedata` / `finnhub` / `mock`) with
+  a LIVE/MOCK badge plus the last error string — never one blanket label.
+- `/bias` and `/pair` show LIVE or MOCK per section (price vs news); live
+  candles are never labelled mock.
+- A failed live call logs on its `IngestRun`, keeps last stored rows, and never
+  invents prices or headlines. If free Finnhub news yields no tagged forex
+  items, news stays on mock and the banner says so (no scraping).
+- Warn: free tiers are delayed and rate-limited (Twelve Data free ≈ 8 req/min —
+  a full 16-call price ingest takes ~2 min); not for live order execution.
+- Not financial advice.
 
 ## Read APIs (what Phase 2+ hooks into)
 
@@ -156,12 +170,33 @@ Phase 4 hook: strategy-video / playbook RAG should constrain setups inside
 `applyPlaybookConstraint` in `src/lib/smc/setups.ts` (filter or downgrade —
 never touch the detector or the fundamental scorer).
 
+## Phase 4a — Playbook (written rules, not videos)
+
+The playbook is text rules that BLOCK or DOWNGRADE setups. Rules beat the model:
+an enabled `block` rule turns a grade-A setup into `rejected` (a block on a B
+also rejects it); a `downgrade` caps A at B. B otherwise stays B.
+
+- Prisma model `PlaybookRule` (title, body, enabled, severity block|downgrade,
+  appliesTo all|long|short, machine-readable `whenJson`, sortOrder).
+- Evaluator `src/lib/playbook/evaluate.ts` switches on `whenJson.kind`
+  (`ob_overlap` | `not_aligned` | `event_window` | `premium_discount`);
+  unknown kinds are ignored, never crash. `/api/smc` returns evaluated setups
+  (`originalGrade`, `finalGrade`, `fired[]`) — raw SMC detection unchanged.
+- APIs: `GET/POST /api/playbook`, `PATCH/DELETE /api/playbook/[id]`
+  (Zod-validated, 400 on bad body, no auth).
+- `/playbook` lists the 5 seeded rules with enable toggle, edit, delete, plus
+  an add-rule form with a closed kind dropdown (no arbitrary code, no eval).
+- How to add a rule: open `/playbook`, fill title + one-sentence body, pick
+  severity / appliesTo / condition kind, Add rule. Toggle persists in the DB.
+- Mock data still mock; not financial advice; no execution anywhere.
+
 ## Data model (`prisma/schema.prisma`)
 
 - `Candle` — unique `(symbol, timeframe, openTime)`
 - `CalendarEvent` — unique `externalId`, `affectedPairs` JSON
 - `NewsItem` — unique `url`, `currencies`/`pairTags` JSON, `impactScore` 0–100
 - `IngestRun` — `kind`, `status`, timings, `error`, `stats` JSON
+- `PlaybookRule` — Phase 4a written rules (severity, appliesTo, whenJson, sortOrder)
 
 Prices are stored as **strings** (providers return decimal strings; stored verbatim — no
 float rounding, and identical behaviour on SQLite and Postgres).

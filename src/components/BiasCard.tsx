@@ -38,6 +38,16 @@ export function ConfidenceBar({ confidence }: { confidence: number }) {
   );
 }
 
+/** Per-feed LIVE/MOCK badge — never labels live candles as mock. */
+export function FeedBadge({ label, name }: { label: string; name: string }) {
+  const live = name !== "mock";
+  return (
+    <span className={live ? "text-emerald-400" : "text-amber-300"}>
+      {label}: {live ? `LIVE (${name})` : "MOCK"}
+    </span>
+  );
+}
+
 export function BiasCard({
   pair,
   biasResult,
@@ -49,8 +59,6 @@ export function BiasCard({
   providers: { price: string; calendar: string; news: string };
   llmActive: boolean;
 }) {
-  const mock = providers.price === "mock" || providers.calendar === "mock" || providers.news === "mock";
-
   return (
     <section className="rounded-xl border border-slate-800 bg-slate-900/60 p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -98,7 +106,8 @@ export function BiasCard({
       </p>
 
       <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-slate-500">
-        {mock && <span className="text-amber-300">MOCK DATA — deterministic sample feed</span>}
+        <FeedBadge label="Price" name={providers.price} />
+        <FeedBadge label="News" name={providers.news} />
         {biasResult.usedLlm && <span className="text-sky-300">LLM overlay (rules + LLM)</span>}
         {!biasResult.usedLlm && llmActive && <span className="text-slate-500">LLM keys present — rules + LLM</span>}
         {!biasResult.usedLlm && !llmActive && <span className="text-slate-600">LLM disabled — rules only</span>}

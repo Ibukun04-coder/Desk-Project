@@ -7,6 +7,7 @@ const envSchema = z.object({
   POLYGON_API_KEY: z.string().optional(),
   OANDA_API_KEY: z.string().optional(),
   OANDA_ACCOUNT_ID: z.string().optional(),
+  NEWS_PROVIDER: z.enum(["finnhub", "mock"]).optional(),
   NEWS_API_KEY: z.string().optional(),
   FINNHUB_API_KEY: z.string().optional(),
   INGEST_INTERVAL_SECONDS: z.coerce.number().int().positive().default(60),
@@ -89,14 +90,21 @@ export function resolveCalendarProvider(): ProviderSelection {
   return { name: "mock", mode: "mock", reason: "no FINNHUB_API_KEY" };
 }
 
-/** News: API sources + central-bank RSS when keyed, else deterministic mock. */
+/** News: Finnhub when NEWS_PROVIDER=finnhub (default) with a key, else mock.
+ *  If Finnhub news returns nothing useful the banner says so (see fetchLiveNews
+ *  fallback note); no scraping of random sites, ever. */
 export function resolveNewsProvider(): ProviderSelection {
   const env = getEnv();
+  const wantLive = (env.NEWS_PROVIDER ?? "finnhub") === "finnhub";
   const sources: string[] = [];
-  if (env.FINNHUB_API_KEY) sources.push("finnhub");
+  if (env.FINNHUB_API_KEY && wantLive) sources.push("finnhub");
   if (env.NEWS_API_KEY) sources.push("newsapi");
   if (sources.length > 0) {
     return { name: [...sources, "rss"].join("+"), mode: "live", reason: "news API key set" };
+  }
+  if (env.FINNHUB_API_KEY && !wantLive) {
+    logOnce("[desk] NEWS_PROVIDER=mock — NEWS running in MOCK mode despite FINNHUB_API_KEY.");
+    return { name: "mock", mode: "mock", reason: "NEWS_PROVIDER=mock" };
   }
   logOnce(
     "[desk] No news API keys (FINNHUB_API_KEY / NEWS_API_KEY) — NEWS running in MOCK mode (sample items).",

@@ -7,12 +7,16 @@ import { getCandles } from "@/lib/data/queries";
 import { getProviderModes } from "@/lib/data/config";
 import { PAIRS, TIMEFRAMES } from "@/lib/data/universe";
 import { MIN_CANDLES_FOR_SMC, detectSmc } from "@/lib/smc/detect";
-import { applyPlaybookConstraint, rankSetups } from "@/lib/smc/setups";
+import { rankSetups } from "@/lib/smc/setups";
+import { evaluateSetups } from "@/lib/playbook/evaluate";
+import { listEnabledPlaybookRules } from "@/lib/playbook/store";
 
 // GET /api/smc?symbol=EURUSD&timeframe=H1 → { smc, setups, bias }.
 // Candles are read through the existing getCandles (no second reader).
 // Bias is fetched from stored Phase 2 snapshots (scoring never duplicated).
 // Computed live on read — no persistence (no SmcCache table in v1).
+// Phase 4a: raw A/B setups pass through the playbook evaluator; the pair
+// page receives evaluated setups (finalGrade + fired rules), not raw grades.
 
 const smcQuerySchema = z.object({
   symbol: z.enum(PAIRS),
@@ -26,21 +30,34 @@ export async function GET(request: Request) {
   try {
     const { symbol, timeframe, limit } = parsed.data;
     const modes = getProviderModes();
-    const [candles, bias] = await Promise.all([
+    const [candles, bias, enabledRules] = await Promise.all([
       getCandles({ symbol, timeframe, limit }),
       getLatestBias(symbol),
+      listEnabledPlaybookRules(),
     ]);
     const smc = detectSmc(symbol, timeframe, candles);
     const { setups, alignment } = rankSetups(
       smc,
       bias ? { bias: bias.bias, confidence: bias.confidence } : null,
     );
+    const evaluated = evaluateSetups({
+      setups,
+      smc,
+      alignment,
+      nextEvent: bias?.nextEvent
+        ? { impact: bias.nextEvent.impact, scheduledAt: bias.nextEvent.scheduledAt.toISOString() }
+        : null,
+      bias: bias ? bias.bias : null,
+      rules: enabledRules,
+    });
+    const serializedBias = bias ? serializeBiasResult(bias) : null;
     return NextResponse.json({
       smc,
-      setups: applyPlaybookConstraint(setups),
+      setups: evaluated,
       alignment,
-      bias: bias ? serializeBiasResult(bias) : null,
+      bias: serializedBias,
       mock: modes.price.mode === "mock",
+      providers: { price: modes.price.name, calendar: modes.calendar.name, news: modes.news.name },
       message: candles.length < MIN_CANDLES_FOR_SMC ? "insufficient candles" : null,
     });
   } catch (err) {

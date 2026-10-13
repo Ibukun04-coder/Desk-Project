@@ -115,7 +115,23 @@ const finnhubNewsSchema = z.union([
 ]);
 
 async function fetchFinnhubNews(apiKey: string): Promise<NewsItemInput[]> {
-  const url = `https://finnhub.io/api/v1/news?category=forex&token=${apiKey}`;
+  // Try the forex category first; free keys often only allow `general`, so
+  // fall back to it and filter for macro/forex headlines. If neither yields
+  // tagged items, return [] — the ingest layer keeps news on mock and the
+  // banner says so. Never scrape random sites.
+  for (const category of ["forex", "general"] as const) {
+    try {
+      const items = await fetchFinnhubNewsCategory(apiKey, category);
+      if (items.length > 0) return items;
+    } catch (err) {
+      logOnce(`[desk] finnhub-news (${category}): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return [];
+}
+
+async function fetchFinnhubNewsCategory(apiKey: string, category: "forex" | "general"): Promise<NewsItemInput[]> {
+  const url = `https://finnhub.io/api/v1/news?category=${category}&token=${apiKey}`;
   const json = await fetchJsonWithRetry(url, { label: "finnhub-news" });
   const parsed = finnhubNewsSchema.safeParse(json);
   if (!parsed.success) throw new Error("finnhub-news: unexpected response shape");

@@ -74,6 +74,25 @@ model IngestRun {
   @@index([kind, startedAt])
 }
 
+// Phase 4a playbook: written SMC rules that BLOCK or DOWNGRADE setups.
+// Rules beat the model — a setup failing an enabled rule cannot stay grade A.
+// whenJson is machine-readable ({ kind, ... }); the evaluator switches on kind.
+model PlaybookRule {
+  id        String   @id @default(cuid())
+  title     String
+  body      String   @default("")
+  enabled   Boolean  @default(true)
+  severity  String   // block | downgrade
+  appliesTo String   @default("all") // all | long | short
+  whenJson  String   @default("{}") // JSON-encoded structured condition
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([enabled, sortOrder])
+}
+
+
 // Phase 2 fundamental bias snapshots. Kept per pair; capped at MAX_SNAPSHOTS_PER_PAIR.
 model BiasSnapshot {
   id        String   @id @default(cuid())

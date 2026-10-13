@@ -14,6 +14,15 @@ export const PRICE_PROVIDER_DELAY_MS: Record<PriceProviderName, number> = {
 };
 
 // --- Twelve Data -----------------------------------------------------------
+// Internal symbols are "EURUSD"; Twelve Data forex wants "EUR/USD".
+// XAU/USD is a metals pair — same slash format.
+
+const TD_SYMBOL: Record<Pair, string> = {
+  EURUSD: "EUR/USD",
+  GBPUSD: "GBP/USD",
+  USDJPY: "USD/JPY",
+  XAUUSD: "XAU/USD",
+};
 
 const TD_INTERVAL: Record<Timeframe, string> = {
   M15: "15min",
@@ -41,7 +50,7 @@ const tdResponseSchema = z.object({
 
 async function fetchTwelveData(params: FetchCandlesParams, apiKey: string): Promise<CandleInput[]> {
   const url =
-    `https://api.twelvedata.com/time_series?symbol=${params.symbol}` +
+    `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(TD_SYMBOL[params.symbol])}` +
     `&interval=${TD_INTERVAL[params.timeframe]}&outputsize=${params.limit}` +
     `&timezone=UTC&format=JSON&apikey=${apiKey}`;
   const json = await fetchJsonWithRetry(url, { label: "twelvedata" });

@@ -486,10 +486,17 @@ export async function runNewsIngest(): Promise<IngestResult> {
   try {
     const items = await provider.fetchNews({ limit: NEWS_FETCH_LIMIT });
     stats.fetched += items.length;
-    const counts = await upsertNewsItems(items);
-    stats.inserted += counts.inserted;
-    stats.updated += counts.updated;
-    stats.skipped += counts.skipped;
+    if (items.length === 0 && !provider.isMock) {
+      // Live news returned nothing useful (e.g. free Finnhub key without a
+      // forex category): keep stored rows, stay honest in the banner.
+      pushError(stats, "live news returned no tagged forex items — stored news kept; news stays on mock");
+      stats.failedCalls++;
+    } else {
+      const counts = await upsertNewsItems(items);
+      stats.inserted += counts.inserted;
+      stats.updated += counts.updated;
+      stats.skipped += counts.skipped;
+    }
   } catch (err) {
     stats.failedCalls++;
     pushError(stats, messageOf(err));

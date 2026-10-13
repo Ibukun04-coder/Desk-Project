@@ -7,16 +7,18 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { PAIRS, PAIR_DISPLAY, TIMEFRAMES, type Pair, type Timeframe } from "@/lib/data/universe";
 import type { BiasApiResult } from "@/lib/api/bias";
-import type { Alignment, Setup, SmcSnapshot } from "@/lib/smc/types";
+import type { Alignment, SmcSnapshot } from "@/lib/smc/types";
+import type { EvaluatedSetup } from "@/lib/playbook/evaluate";
 import { BiasCard } from "@/components/BiasCard";
 import { PairChart, type ChartCandle } from "@/components/pair/PairChart";
 
 export type SmcResponse = {
   smc: SmcSnapshot;
-  setups: Setup[];
+  setups: EvaluatedSetup[];
   alignment: Alignment;
   bias: BiasApiResult | null;
   mock: boolean;
+  providers: { price: string; calendar: string; news: string };
   message: string | null;
 };
 
@@ -41,10 +43,11 @@ export function PairView({ symbol, initialTimeframe }: { symbol: Pair; initialTi
   const [timeframe, setTimeframe] = useState<Timeframe>(initialTimeframe);
   const [candles, setCandles] = useState<ChartCandle[]>([]);
   const [smc, setSmc] = useState<SmcSnapshot | null>(null);
-  const [setups, setSetups] = useState<Setup[]>([]);
+  const [setups, setSetups] = useState<EvaluatedSetup[]>([]);
   const [alignment, setAlignment] = useState<Alignment>("DO_NOT_TRADE");
   const [bias, setBias] = useState<BiasApiResult | null>(null);
   const [mock, setMock] = useState(false);
+  const [providers, setProviders] = useState({ price: "mock", calendar: "mock", news: "mock" });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -66,6 +69,7 @@ export function PairView({ symbol, initialTimeframe }: { symbol: Pair; initialTi
       setAlignment(sBody.alignment);
       setBias(sBody.bias);
       setMock(sBody.mock);
+      if (sBody.providers) setProviders(sBody.providers);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load pair data.");
     } finally {
@@ -113,7 +117,13 @@ export function PairView({ symbol, initialTimeframe }: { symbol: Pair; initialTi
 
       {mock && (
         <div className="mt-4 rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
-          <strong>MOCK DATA</strong> — price feed is deterministic sample data, not live. Structure overlays are still computed from those candles by rules (no LLM).
+          <strong>MOCK DATA</strong> — price feed ({providers.price}) is deterministic sample data, not live.
+          Structure overlays are still computed from those candles by rules (no LLM).
+        </div>
+      )}
+      {!mock && (
+        <div className="mt-4 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">
+          <strong>LIVE price</strong> — candles from {providers.price}. Overlays recomputed from live data by rules.
         </div>
       )}
 
@@ -141,7 +151,7 @@ export function PairView({ symbol, initialTimeframe }: { symbol: Pair; initialTi
 
         <aside className="min-w-0 space-y-4">
           {bias ? (
-            <BiasCard pair={symbol} biasResult={bias} providers={{ price: mock ? "mock" : "live", calendar: "n/a", news: "n/a" }} llmActive={bias.usedLlm} />
+            <BiasCard pair={symbol} biasResult={bias} providers={providers} llmActive={bias.usedLlm} />
           ) : (
             <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4 text-sm text-slate-400">
               No fundamental bias snapshot for {symbol} yet — press Recompute bias on the <Link href="/bias" className="text-sky-400 hover:underline">Bias desk</Link>.
@@ -168,17 +178,29 @@ export function PairView({ symbol, initialTimeframe }: { symbol: Pair; initialTi
           </section>
 
           <section className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-            <h2 className="text-sm font-semibold text-slate-200">Setups (rules only)</h2>
+            <h2 className="text-sm font-semibold text-slate-200">Setups (rules + playbook)</h2>
             {setups.length === 0 ? (
               <p className="mt-2 text-sm text-slate-400">No setup — standing aside is the position.</p>
-            ) : (
+            ) : setups.every((s) => s.finalGrade === "rejected") ? (
+              <p className="mt-2 text-sm text-rose-300">No setup — playbook blocked.</p>
+            ) : null}
+            {setups.length > 0 && !setups.every((s) => s.finalGrade === "rejected") ? (
               <ul className="mt-2 space-y-3">
                 {setups.map((s, i) => (
                   <li key={i} className="rounded-md border border-slate-700 bg-slate-950/60 p-3">
                     <div className="flex items-center gap-2">
-                      <span className={`rounded px-2 py-0.5 text-xs font-bold ${s.grade === "A" ? "bg-emerald-500/15 text-emerald-300" : "bg-amber-500/15 text-amber-300"}`}>{s.grade}-setup</span>
+                      <span className={`rounded px-2 py-0.5 text-xs font-bold ${s.finalGrade === "A" ? "bg-emerald-500/15 text-emerald-300" : s.finalGrade === "B" ? "bg-amber-500/15 text-amber-300" : "bg-rose-500/15 text-rose-300"}`}>{s.finalGrade === "rejected" ? "Rejected" : `${s.finalGrade}-setup`}</span>
                       <span className="text-sm font-medium text-slate-200">{s.side.toUpperCase()}</span>
+                      {s.originalGrade !== s.finalGrade && s.finalGrade !== "rejected" && (
+                        <span className="text-xs text-slate-500">(was {s.originalGrade})</span>
+                      )}
                     </div>
+                    {s.fired.length > 0 && (
+                      <p className="mt-1 text-xs text-amber-300">
+                        {s.finalGrade === "rejected" ? "Blocked by: " : "Playbook: "}
+                        {s.fired.map((f) => f.title).join("; ")}
+                      </p>
+                    )}
                     <dl className="mt-2 space-y-1 text-xs text-slate-400">
                       <div className="flex justify-between"><dt>Entry zone</dt><dd className="text-slate-200">{s.entryZone.low} – {s.entryZone.high}</dd></div>
                       <div className="flex justify-between"><dt>Invalidation</dt><dd className="text-rose-300">{s.invalidation}</dd></div>
@@ -187,6 +209,20 @@ export function PairView({ symbol, initialTimeframe }: { symbol: Pair; initialTi
                     <ul className="mt-2 space-y-0.5 text-xs text-slate-500">
                       {s.why.map((w, j) => <li key={j}>· {w}</li>)}
                     </ul>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            {setups.length > 0 && setups.every((s) => s.finalGrade === "rejected") && (
+              <ul className="mt-2 space-y-3">
+                {setups.map((s, i) => (
+                  <li key={i} className="rounded-md border border-rose-900/60 bg-slate-950/60 p-3 opacity-80">
+                    <div className="flex items-center gap-2">
+                      <span className="rounded bg-rose-500/15 px-2 py-0.5 text-xs font-bold text-rose-300">Rejected</span>
+                      <span className="text-sm font-medium text-slate-200">{s.side.toUpperCase()}</span>
+                      <span className="text-xs text-slate-500">(was {s.originalGrade})</span>
+                    </div>
+                    <p className="mt-1 text-xs text-amber-300">Blocked by: {s.fired.map((f) => f.title).join("; ")}</p>
                   </li>
                 ))}
               </ul>

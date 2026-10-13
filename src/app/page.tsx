@@ -65,16 +65,25 @@ export default async function DataHealthPage() {
 
       {mockKinds.length > 0 && (
         <div className="mt-4 rounded-md border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
-          <strong>Mock mode:</strong> {mockKinds.join(", ")} — no API keys configured, so
-          deterministic sample data is generated. Add keys to <code>.env</code> and restart to go
-          live. Stored data is still served normally if providers fail.
+          <strong>Mock feeds:</strong> {mockKinds.join(", ")} — add the matching key to{" "}
+          <code>.env</code> and restart to go live. Feeds with keys already run live;
+          stored data is served normally if a provider fails.
+        </div>
+      )}
+      {mockKinds.length === 0 && (
+        <div className="mt-4 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">
+          <strong>All feeds live</strong> — price, calendar, and news are ingesting from real providers.
         </div>
       )}
 
       <div className="mt-4 flex flex-wrap gap-2 text-xs">
-        {(["price", "calendar", "news"] as const).map((kind) => (
+        {([["price", "Price"], ["calendar", "Calendar"], ["news", "News"]] as const).map(([kind, label]) => (
           <span key={kind} className="rounded-full border border-slate-700 bg-slate-900 px-3 py-1 text-slate-300">
-            {kind}: <span className="font-semibold">{modes[kind].name}</span> — {modes[kind].reason}
+            {label}: <span className="font-semibold">{modes[kind].name}</span>{" "}
+            <span className={modes[kind].mode === "live" ? "text-emerald-400" : "text-amber-300"}>
+              {modes[kind].mode === "live" ? "LIVE" : "MOCK"}
+            </span>{" "}
+            — {modes[kind].reason}
           </span>
         ))}
         <span className="rounded-full border border-slate-700 bg-slate-900 px-3 py-1 text-slate-300">
