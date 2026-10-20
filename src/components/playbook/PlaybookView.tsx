@@ -26,6 +26,8 @@ const KIND_HINTS: Record<WhenKind, string> = {
 const SEVERITY_STYLES: Record<RuleSeverity, string> = {
   block: "bg-rose-500/15 text-rose-400",
   downgrade: "bg-amber-500/15 text-amber-400",
+  confluence: "bg-emerald-500/15 text-emerald-400",
+  info: "bg-slate-500/15 text-slate-400",
 };
 
 export function PlaybookView({ initialRules }: { initialRules: PlaybookRuleDto[] }) {
@@ -292,8 +294,10 @@ export function PlaybookView({ initialRules }: { initialRules: PlaybookRuleDto[]
               onChange={(e) => setSeverity(e.target.value as RuleSeverity)}
               className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200"
             >
-              <option value="block">block (reject A)</option>
-              <option value="downgrade">downgrade (A → B)</option>
+              <option value="block">block (verdict block, grade C)</option>
+              <option value="downgrade">downgrade (steps grade A → B → C)</option>
+              <option value="confluence">confluence (recorded, never blocks)</option>
+              <option value="info">info (context note only)</option>
             </select>
           </label>
           <label className="block text-xs text-slate-400">

@@ -110,3 +110,49 @@ model BiasSnapshot {
   @@unique([pair, asOf])
   @@index([pair, createdAt])
 }
+
+// Phase 5 paper journal: a setup logged with the analysis that justified it,
+// then closed later with an outcome. ANALYSIS ONLY — nothing here places or
+// simulates a fill. History is a snapshot: bias/playbook/SMC are copied at
+// log time and never refreshed, so later playbook or bias changes cannot
+// rewrite old entries. Prices/plannedR/realizedR are strings, same convention
+// as Candle: decimal strings stored verbatim, no float rounding.
+model JournalEntry {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  pair      String // EURUSD | GBPUSD | USDJPY | XAUUSD
+  timeframe String // M15 | H1 | H4 | D1
+  direction String // long | short
+  status    String // idea | active | closed | invalidated | expired
+
+  entryPrice   String
+  stopPrice    String
+  targetPrice  String
+  target2Price String? // optional second target
+  plannedR     String // |target-entry| / |entry-stop|, fixed at log time
+
+  thesis String // max 1000 chars, validated in Zod at the route edge
+
+  // Snapshots taken at log time, never refreshed.
+  biasSnapshot     Json? // { direction, confidence, drivers[], invalidation, asOf }
+  biasNote         String? // required when biasSnapshot is null (bias not loadable)
+  playbookSnapshot Json? // { verdict, grade, originalGrade, fired[], alignment, asOf }
+  smcSnapshot      Json? // trimmed SmcSnapshot (existing SMC types); null when none
+
+  exitPrice   String?
+  exitReason  String? // target | stop | manual | invalidated | expired
+  result      String? // win | loss | breakeven | scratched
+  realizedR   String? // rounded to 2dp at close; null when skipped
+  closedAt    DateTime?
+  reviewNote  String?
+
+  source         String // from_setup | manual
+  overrideReason String? // required when the playbook verdict is block
+  tags           Json // string[]
+
+  @@index([pair, status])
+  @@index([status, createdAt])
+  @@index([closedAt])
+}

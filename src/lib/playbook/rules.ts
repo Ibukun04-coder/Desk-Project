@@ -1,9 +1,11 @@
 import { z } from "zod";
 
-// Phase 4a playbook rule shapes. whenJson stays machine-readable; the
-// evaluator switches on `kind`. Unknown kinds are ignored, never crash.
+// Playbook rule shapes (consumed by the v2 evaluatePlaybook). whenJson stays
+// machine-readable; the evaluator switches on `kind`. Unknown kinds are
+// ignored, never crash. block/downgrade change the verdict; confluence/info
+// are recorded context that never blocks or downgrades.
 
-export const RULE_SEVERITIES = ["block", "downgrade"] as const;
+export const RULE_SEVERITIES = ["block", "downgrade", "confluence", "info"] as const;
 export type RuleSeverity = (typeof RULE_SEVERITIES)[number];
 
 export const RULE_APPLIES = ["all", "long", "short"] as const;
@@ -104,7 +106,8 @@ export function toRuleDto(row: {
 }
 
 function severityOf(v: string): RuleSeverity {
-  return v === "downgrade" ? "downgrade" : "block";
+  if (v === "downgrade" || v === "confluence" || v === "info") return v;
+  return "block"; // unknown legacy values stay the strictest severity
 }
 
 function appliesOf(v: string): RuleAppliesTo {

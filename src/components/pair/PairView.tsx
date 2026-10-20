@@ -1,20 +1,20 @@
 "use client";
 
 // /pair/[symbol] client view: TF pills, chart, right rail (bias + SMC +
-// alignment + setups). Fetches /api/candles and /api/smc in parallel.
+// alignment + playbook verdict). Fetches /api/candles and /api/smc in parallel.
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { PAIRS, PAIR_DISPLAY, TIMEFRAMES, type Pair, type Timeframe } from "@/lib/data/universe";
 import type { BiasApiResult } from "@/lib/api/bias";
 import type { Alignment, SmcSnapshot } from "@/lib/smc/types";
-import type { EvaluatedSetup } from "@/lib/playbook/evaluate";
+import type { PlaybookResult, PlaybookRuleSeverity } from "@/lib/playbook/evaluate";
 import { BiasCard } from "@/components/BiasCard";
 import { PairChart, type ChartCandle } from "@/components/pair/PairChart";
 
 export type SmcResponse = {
   smc: SmcSnapshot;
-  setups: EvaluatedSetup[];
+  playbook: PlaybookResult;
   alignment: Alignment;
   bias: BiasApiResult | null;
   mock: boolean;
@@ -39,11 +39,43 @@ export const HTF_STYLES: Record<string, string> = {
   range: "bg-slate-500/15 text-slate-400",
 };
 
+export const VERDICT_STYLES: Record<string, string> = {
+  allow: "bg-emerald-500/15 text-emerald-300",
+  downgrade: "bg-amber-500/15 text-amber-300",
+  block: "bg-rose-500/15 text-rose-300",
+  no_setup: "bg-slate-500/15 text-slate-300",
+};
+
+export const GRADE_STYLES: Record<string, string> = {
+  A: "bg-emerald-500/15 text-emerald-300",
+  B: "bg-amber-500/15 text-amber-300",
+  C: "bg-rose-500/15 text-rose-300",
+};
+
+export const RULE_STYLES: Record<PlaybookRuleSeverity, string> = {
+  block: "bg-rose-500/15 text-rose-300",
+  downgrade: "bg-amber-500/15 text-amber-300",
+  confluence: "bg-emerald-500/15 text-emerald-300",
+  info: "bg-slate-500/15 text-slate-400",
+};
+
+/** Deep link into /journal prefilled from the verdict's levels (analysis record only). */
+export function journalHref(symbol: Pair, timeframe: Timeframe, result: PlaybookResult): string {
+  const q = new URLSearchParams({ pair: symbol, timeframe, source: "from_setup" });
+  if (result.direction) q.set("direction", result.direction);
+  if (result.levels) {
+    q.set("entryPrice", String(result.levels.entry));
+    q.set("stopPrice", String(result.levels.invalidation));
+    q.set("targetPrice", String(result.levels.target));
+  }
+  return `/journal?${q.toString()}`;
+}
+
 export function PairView({ symbol, initialTimeframe }: { symbol: Pair; initialTimeframe: Timeframe }) {
   const [timeframe, setTimeframe] = useState<Timeframe>(initialTimeframe);
   const [candles, setCandles] = useState<ChartCandle[]>([]);
   const [smc, setSmc] = useState<SmcSnapshot | null>(null);
-  const [setups, setSetups] = useState<EvaluatedSetup[]>([]);
+  const [playbook, setPlaybook] = useState<PlaybookResult | null>(null);
   const [alignment, setAlignment] = useState<Alignment>("DO_NOT_TRADE");
   const [bias, setBias] = useState<BiasApiResult | null>(null);
   const [mock, setMock] = useState(false);
@@ -65,7 +97,7 @@ export function PairView({ symbol, initialTimeframe }: { symbol: Pair; initialTi
       const sBody = (await sRes.json()) as SmcResponse;
       setCandles(cBody.data);
       setSmc(sBody.smc);
-      setSetups(sBody.setups);
+      setPlaybook(sBody.playbook);
       setAlignment(sBody.alignment);
       setBias(sBody.bias);
       setMock(sBody.mock);
@@ -178,54 +210,85 @@ export function PairView({ symbol, initialTimeframe }: { symbol: Pair; initialTi
           </section>
 
           <section className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-            <h2 className="text-sm font-semibold text-slate-200">Setups (rules + playbook)</h2>
-            {setups.length === 0 ? (
+            <h2 className="text-sm font-semibold text-slate-200">Playbook verdict (v2 · rules only)</h2>
+            {!playbook || playbook.verdict === "no_setup" ? (
               <p className="mt-2 text-sm text-slate-400">No setup — standing aside is the position.</p>
-            ) : setups.every((s) => s.finalGrade === "rejected") ? (
-              <p className="mt-2 text-sm text-rose-300">No setup — playbook blocked.</p>
-            ) : null}
-            {setups.length > 0 && !setups.every((s) => s.finalGrade === "rejected") ? (
-              <ul className="mt-2 space-y-3">
-                {setups.map((s, i) => (
-                  <li key={i} className="rounded-md border border-slate-700 bg-slate-950/60 p-3">
-                    <div className="flex items-center gap-2">
-                      <span className={`rounded px-2 py-0.5 text-xs font-bold ${s.finalGrade === "A" ? "bg-emerald-500/15 text-emerald-300" : s.finalGrade === "B" ? "bg-amber-500/15 text-amber-300" : "bg-rose-500/15 text-rose-300"}`}>{s.finalGrade === "rejected" ? "Rejected" : `${s.finalGrade}-setup`}</span>
-                      <span className="text-sm font-medium text-slate-200">{s.side.toUpperCase()}</span>
-                      {s.originalGrade !== s.finalGrade && s.finalGrade !== "rejected" && (
-                        <span className="text-xs text-slate-500">(was {s.originalGrade})</span>
+            ) : (
+              <div className={`mt-2 rounded-md border bg-slate-950/60 p-3 ${playbook.verdict === "block" ? "border-rose-900/60" : "border-slate-700"}`}>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className={`rounded px-2 py-0.5 text-xs font-bold ${VERDICT_STYLES[playbook.verdict] ?? VERDICT_STYLES.no_setup}`}>{playbook.verdict}</span>
+                  {playbook.grade && (
+                    <span className={`rounded px-2 py-0.5 text-xs font-bold ${GRADE_STYLES[playbook.grade]}`}>grade {playbook.grade}</span>
+                  )}
+                  <span className="text-sm font-medium text-slate-200">{(playbook.direction ?? "").toUpperCase()}</span>
+                </div>
+                {playbook.levels ? (
+                  <dl className="mt-2 space-y-1 text-xs text-slate-400">
+                    <div className="flex justify-between"><dt>Entry</dt><dd className="text-slate-200">{playbook.levels.entry}</dd></div>
+                    <div className="flex justify-between"><dt>Invalidation</dt><dd className="text-rose-300">{playbook.levels.invalidation}</dd></div>
+                    <div className="flex justify-between"><dt>Target</dt><dd className="text-slate-200">{playbook.levels.target}</dd></div>
+                    <div className="flex justify-between"><dt>Planned R</dt><dd className="text-slate-200">{playbook.levels.plannedR}</dd></div>
+                  </dl>
+                ) : (
+                  <p className="mt-2 text-xs text-slate-500">No numeric levels — nothing to size from detected prices.</p>
+                )}
+                {(() => {
+                  const blocks = playbook.rules.filter((r) => r.severity === "block");
+                  const downgrades = playbook.rules.filter((r) => r.severity === "downgrade");
+                  const context = playbook.rules.filter((r) => r.severity === "confluence" || r.severity === "info");
+                  return (
+                    <>
+                      {blocks.length > 0 && (
+                        <section className="mt-1">
+                          <h3 className="text-[10px] uppercase font-semibold text-rose-400 mb-1">Hard blocks</h3>
+                          <ul className="space-y-1 text-xs">
+                            {blocks.map((r, i) => (
+                              <li key={`${r.id}-${i}`} className="flex items-start gap-1.5">
+                                <span className={`rounded px-1 py-0.5 text-[10px] font-semibold uppercase ${RULE_STYLES[r.severity]}`}>{r.severity}</span>
+                                <span className="text-slate-400">{r.message}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </section>
                       )}
-                    </div>
-                    {s.fired.length > 0 && (
-                      <p className="mt-1 text-xs text-amber-300">
-                        {s.finalGrade === "rejected" ? "Blocked by: " : "Playbook: "}
-                        {s.fired.map((f) => f.title).join("; ")}
-                      </p>
-                    )}
-                    <dl className="mt-2 space-y-1 text-xs text-slate-400">
-                      <div className="flex justify-between"><dt>Entry zone</dt><dd className="text-slate-200">{s.entryZone.low} – {s.entryZone.high}</dd></div>
-                      <div className="flex justify-between"><dt>Invalidation</dt><dd className="text-rose-300">{s.invalidation}</dd></div>
-                      <div className="flex justify-between"><dt>Target hint</dt><dd className="text-slate-200">{s.targetHint}</dd></div>
-                    </dl>
-                    <ul className="mt-2 space-y-0.5 text-xs text-slate-500">
-                      {s.why.map((w, j) => <li key={j}>· {w}</li>)}
-                    </ul>
-                  </li>
-                ))}
-              </ul>
-            ) : null}
-            {setups.length > 0 && setups.every((s) => s.finalGrade === "rejected") && (
-              <ul className="mt-2 space-y-3">
-                {setups.map((s, i) => (
-                  <li key={i} className="rounded-md border border-rose-900/60 bg-slate-950/60 p-3 opacity-80">
-                    <div className="flex items-center gap-2">
-                      <span className="rounded bg-rose-500/15 px-2 py-0.5 text-xs font-bold text-rose-300">Rejected</span>
-                      <span className="text-sm font-medium text-slate-200">{s.side.toUpperCase()}</span>
-                      <span className="text-xs text-slate-500">(was {s.originalGrade})</span>
-                    </div>
-                    <p className="mt-1 text-xs text-amber-300">Blocked by: {s.fired.map((f) => f.title).join("; ")}</p>
-                  </li>
-                ))}
-              </ul>
+                      {downgrades.length > 0 && (
+                        <section className="mt-1">
+                          <h3 className="text-[10px] uppercase font-semibold text-amber-400 mb-1">Downgrades</h3>
+                          <ul className="space-y-1 text-xs">
+                            {downgrades.map((r, i) => (
+                              <li key={`${r.id}-${i}`} className="flex items-start gap-1.5">
+                                <span className={`rounded px-1 py-0.5 text-[10px] font-semibold uppercase ${RULE_STYLES[r.severity]}`}>{r.severity}</span>
+                                <span className="text-slate-400">{r.message}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </section>
+                      )}
+                      {context.length > 0 && (
+                        <section className="mt-1">
+                          <h3 className="text-[10px] uppercase font-semibold text-slate-400 mb-1">Confluence / context</h3>
+                          <ul className="space-y-1 text-xs">
+                            {context.map((r, i) => (
+                              <li key={`${r.id}-${i}`} className="flex items-start gap-1.5">
+                                <span className={`rounded px-1 py-0.5 text-[10px] font-semibold uppercase ${RULE_STYLES[r.severity]}`}>{r.severity}</span>
+                                <span className="text-slate-400">{r.message}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </section>
+                      )}
+                    </>
+                  );
+                })()}
+                {(playbook.verdict === "allow" || playbook.verdict === "downgrade") && playbook.direction && playbook.levels && (
+                  <Link
+                    href={journalHref(symbol, timeframe, playbook)}
+                    className="mt-2 inline-block text-xs text-sky-400 hover:underline"
+                  >
+                    Journal this setup →
+                  </Link>
+                )}
+              </div>
             )}
           </section>
 

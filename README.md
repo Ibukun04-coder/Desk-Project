@@ -224,16 +224,21 @@ never touch the detector or the fundamental scorer).
 
 ## Phase 4a — Playbook (written rules, not videos)
 
-The playbook is text rules that BLOCK or DOWNGRADE setups. Rules beat the model:
-an enabled `block` rule turns a grade-A setup into `rejected` (a block on a B
-also rejects it); a `downgrade` caps A at B. B otherwise stays B.
+The playbook is one pure function, `evaluatePlaybook(input)` in
+`src/lib/playbook/evaluate.ts` (v2). Rules beat the model: any enabled
+`block` rule forces verdict `block` and grade C; each `downgrade` steps the
+grade once (A → B → C, floor C); no candidate gives `no_setup`. `confluence`
+and `info` rules are recorded but never change the verdict. No database and
+no wall clock inside — `now` is passed in by the caller.
 
-- Prisma model `PlaybookRule` (title, body, enabled, severity block|downgrade,
-  appliesTo all|long|short, machine-readable `whenJson`, sortOrder).
-- Evaluator `src/lib/playbook/evaluate.ts` switches on `whenJson.kind`
-  (`ob_overlap` | `not_aligned` | `event_window` | `premium_discount`);
-  unknown kinds are ignored, never crash. `/api/smc` returns evaluated setups
-  (`originalGrade`, `finalGrade`, `fired[]`) — raw SMC detection unchanged.
+- Prisma model `PlaybookRule` (title, body, enabled, severity
+  block|downgrade|confluence|info, appliesTo all|long|short, machine-readable
+  `whenJson`, sortOrder).
+- The evaluator switches on `whenJson.kind` (`ob_overlap` | `not_aligned` |
+  `event_window` | `premium_discount`); unknown kinds are ignored, never
+  crash. `/api/smc` returns one `PlaybookResult` (`verdict`, `grade`,
+  `direction`, `rules[]`, `levels { entry, invalidation, target, plannedR }`)
+  — raw SMC detection unchanged; targets come only from detected prices.
 - APIs: `GET/POST /api/playbook`, `PATCH/DELETE /api/playbook/[id]`
   (Zod-validated, 400 on bad body, no auth).
 - `event_window` reads `bias.nextEvent` (the soonest future high-impact calendar

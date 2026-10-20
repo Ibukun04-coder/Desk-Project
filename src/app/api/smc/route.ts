@@ -8,15 +8,15 @@ import { getProviderModes } from "@/lib/data/config";
 import { PAIRS, TIMEFRAMES } from "@/lib/data/universe";
 import { MIN_CANDLES_FOR_SMC, detectSmc } from "@/lib/smc/detect";
 import { rankSetups } from "@/lib/smc/setups";
-import { evaluateSetups } from "@/lib/playbook/evaluate";
+import { evaluatePlaybook } from "@/lib/playbook/evaluate";
 import { listEnabledPlaybookRules } from "@/lib/playbook/store";
 
 // GET /api/smc?symbol=EURUSD&timeframe=H1 → { smc, setups, bias }.
 // Candles are read through the existing getCandles (no second reader).
 // Bias is fetched from stored Phase 2 snapshots (scoring never duplicated).
 // Computed live on read — no persistence (no SmcCache table in v1).
-// Phase 4a: raw A/B setups pass through the playbook evaluator; the pair
-// page receives evaluated setups (finalGrade + fired rules), not raw grades.
+// Phase 4b: the ranked candidate passes through the ONE playbook evaluator
+// (v2). The pair page receives a single verdict — grade, rules and levels.
 
 const smcQuerySchema = z.object({
   symbol: z.enum(PAIRS),
@@ -40,7 +40,7 @@ export async function GET(request: Request) {
       smc,
       bias ? { bias: bias.bias, confidence: bias.confidence } : null,
     );
-    const evaluated = evaluateSetups({
+    const playbook = evaluatePlaybook({
       setups,
       smc,
       alignment,
@@ -49,11 +49,12 @@ export async function GET(request: Request) {
         : null,
       bias: bias ? bias.bias : null,
       rules: enabledRules,
+      now: Date.now(),
     });
     const serializedBias = bias ? serializeBiasResult(bias) : null;
     return NextResponse.json({
       smc,
-      setups: evaluated,
+      playbook,
       alignment,
       bias: serializedBias,
       mock: modes.price.mode === "mock",
