@@ -1,11 +1,10 @@
-import { prisma } from "@/lib/data/prisma";
+﻿import { prisma } from "@/lib/data/prisma";
 import { getLatestBias, type BiasResult } from "@/lib/data/bias";
 import { getCandles } from "@/lib/data/queries";
 import type { Pair, Timeframe } from "@/lib/data/universe";
 import { evaluatePlaybook } from "@/lib/playbook/evaluate";
-import { listEnabledPlaybookRules } from "@/lib/playbook/store";
+import { derivePlaybookInput } from "@/lib/playbook/derive";
 import { MIN_CANDLES_FOR_SMC, detectSmc } from "@/lib/smc/detect";
-import { rankSetups } from "@/lib/smc/setups";
 import type { SmcSnapshot } from "@/lib/smc/types";
 import type { JournalEntry } from "@prisma/client";
 import {
@@ -31,7 +30,7 @@ import {
 } from "./types";
 
 // Phase 5 journal persistence. The playbook verdict is computed ONCE, at save
-// time, by calling the existing evaluatePlaybook (v2) — old rows are never
+// time, by calling the existing evaluatePlaybook (v2) â€” old rows are never
 // re-scored, so a later playbook or bias edit cannot rewrite journal history.
 
 const CANDLE_LIMIT_FOR_SMC = 300;
@@ -55,40 +54,19 @@ export type VerdictResult = {
 
 /**
  * One call into the existing playbook evaluator. Server loads the current
- * bias, SMC and enabled rules itself — the client never supplies a verdict.
+ * bias, SMC and enabled rules itself â€” the client never supplies a verdict.
  * The entry's own prices form the setup under test, so a blocked setup stays
  * blocked whether it came from the chart or from a manual form.
  */
 export async function computePlaybookVerdict(input: VerdictInput): Promise<VerdictResult> {
-  const [candles, bias, rules] = await Promise.all([
+  const [candles, bias] = await Promise.all([
     getCandles({ symbol: input.pair, timeframe: input.timeframe, limit: CANDLE_LIMIT_FOR_SMC }),
     getLatestBias(input.pair),
-    listEnabledPlaybookRules(),
   ]);
   const smc = detectSmc(input.pair, input.timeframe, candles);
-  const ranked = rankSetups(smc, bias ? { bias: bias.bias, confidence: bias.confidence } : null);
+  const playbookInput = derivePlaybookInput(input.pair, input.timeframe, candles, smc, bias, Date.now());
+  const result = evaluatePlaybook(playbookInput);
 
-  // The entry sits at a single price, so the proposal's zone is degenerate —
-  // this is the logged level, not a detected one. A proposal always yields a
-  // candidate, so a journal verdict is never "no_setup".
-  const matched = ranked.setups.find((s) => s.side === input.direction) ?? null;
-  const result = evaluatePlaybook({
-    setups: ranked.setups,
-    smc,
-    alignment: ranked.alignment,
-    nextEvent: bias?.nextEvent
-      ? { impact: bias.nextEvent.impact, scheduledAt: bias.nextEvent.scheduledAt.toISOString() }
-      : null,
-    bias: bias ? bias.bias : null,
-    rules,
-    now: Date.now(),
-    proposal: {
-      direction: input.direction,
-      entry: input.entryPrice,
-      invalidation: input.stopPrice,
-      target: input.targetPrice,
-    },
-  });
 
   // The snapshot keeps its original shape: written block/downgrade rules only
   // (confluence/info context lives in the live result, not in history).
@@ -96,13 +74,13 @@ export async function computePlaybookVerdict(input: VerdictInput): Promise<Verdi
     playbookVersion: 2,
     verdict: result.verdict,
     grade: result.grade,
-    originalGrade: matched ? matched.grade : null,
+    originalGrade: null,
     fired: result.rules.flatMap((r) =>
       r.severity === "block" || r.severity === "downgrade"
         ? [{ ruleId: r.id, title: r.message, severity: r.severity }]
         : [],
     ),
-    alignment: ranked.alignment,
+    alignment: "DO_NOT_TRADE",
     asOf: new Date().toISOString(),
   };
 
@@ -119,7 +97,7 @@ function toBiasSnapshot(bias: BiasResult): JournalBiasSnapshot {
   };
 }
 
-/** Trim the live SmcSnapshot down to what the journal keeps — same types, no swings. */
+/** Trim the live SmcSnapshot down to what the journal keeps â€” same types, no swings. */
 function toSmcSnapshot(smc: SmcSnapshot): JournalSmcSnapshot | null {
   const meaningful =
     smc.candleCount >= MIN_CANDLES_FOR_SMC &&
@@ -144,7 +122,7 @@ function toSmcSnapshot(smc: SmcSnapshot): JournalSmcSnapshot | null {
   };
 }
 
-/** Where the last unmitigated zones sat relative to the current price — analysis note only. */
+/** Where the last unmitigated zones sat relative to the current price â€” analysis note only. */
 function describeEntryContext(smc: SmcSnapshot): string | null {
   const parts: string[] = [];
   const lastOb = smc.orderBlocks.filter((o) => !o.mitigated).at(-1);
@@ -152,7 +130,7 @@ function describeEntryContext(smc: SmcSnapshot): string | null {
   const lastFvg = smc.fvgs.filter((f) => !f.mitigated).at(-1);
   if (lastFvg) parts.push(`last unmitigated ${lastFvg.direction} FVG ${lastFvg.low}-${lastFvg.high}`);
   if (smc.range) parts.push(`range ${smc.range.low}-${smc.range.high} (mid ${smc.range.midpoint})`);
-  return parts.length > 0 ? parts.join(" · ") : null;
+  return parts.length > 0 ? parts.join(" Â· ") : null;
 }
 
 // --- Serialization ---------------------------------------------------------------
@@ -301,7 +279,7 @@ function finalize(acc: Acc): JournalStatsBucket {
   const winRate = acc.trades > 0 ? acc.wins / acc.trades : 0;
   const avgWinR = acc.wins > 0 ? acc.winSum / acc.wins : 0;
   const avgLossR = acc.losses > 0 ? acc.lossAbsSum / acc.losses : 0;
-  // Expectancy uses win+loss as the denominator — breakevens neither add nor subtract.
+  // Expectancy uses win+loss as the denominator â€” breakevens neither add nor subtract.
   const expectancyR = scored > 0 ? winRate * avgWinR - (1 - winRate) * avgLossR : 0;
   return {
     trades: acc.trades,
@@ -425,7 +403,7 @@ export type CloseOutcome = {
 
 /**
  * Outcome math for a close. realizedR comes from the stored entry/stop and the
- * submitted exit — the client never supplies its own R. A missing exit price
+ * submitted exit â€” the client never supplies its own R. A missing exit price
  * (invalidated / expired / manual scratch) keeps realizedR null and the row is
  * excluded from win rate and expectancy by the stats query.
  */

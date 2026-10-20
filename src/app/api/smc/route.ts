@@ -9,7 +9,7 @@ import { PAIRS, TIMEFRAMES } from "@/lib/data/universe";
 import { MIN_CANDLES_FOR_SMC, detectSmc } from "@/lib/smc/detect";
 import { rankSetups } from "@/lib/smc/setups";
 import { evaluatePlaybook } from "@/lib/playbook/evaluate";
-import { listEnabledPlaybookRules } from "@/lib/playbook/store";
+import { derivePlaybookInput } from "@/lib/playbook/derive";
 
 // GET /api/smc?symbol=EURUSD&timeframe=H1 → { smc, setups, bias }.
 // Candles are read through the existing getCandles (no second reader).
@@ -30,27 +30,17 @@ export async function GET(request: Request) {
   try {
     const { symbol, timeframe, limit } = parsed.data;
     const modes = getProviderModes();
-    const [candles, bias, enabledRules] = await Promise.all([
+    const [candles, bias] = await Promise.all([
       getCandles({ symbol, timeframe, limit }),
       getLatestBias(symbol),
-      listEnabledPlaybookRules(),
     ]);
     const smc = detectSmc(symbol, timeframe, candles);
     const { setups, alignment } = rankSetups(
       smc,
       bias ? { bias: bias.bias, confidence: bias.confidence } : null,
     );
-    const playbook = evaluatePlaybook({
-      setups,
-      smc,
-      alignment,
-      nextEvent: bias?.nextEvent
-        ? { impact: bias.nextEvent.impact, scheduledAt: bias.nextEvent.scheduledAt.toISOString() }
-        : null,
-      bias: bias ? bias.bias : null,
-      rules: enabledRules,
-      now: Date.now(),
-    });
+    const playbookInput = derivePlaybookInput(symbol, timeframe, candles, smc, bias, Date.now());
+    const playbook = evaluatePlaybook(playbookInput);
     const serializedBias = bias ? serializeBiasResult(bias) : null;
     return NextResponse.json({
       smc,

@@ -1,280 +1,440 @@
-import type { Alignment, Setup, SetupSide, SmcSnapshot } from "@/lib/smc/types";
-import type { BiasDir } from "@/lib/data/fundamental/score-types";
-import { MISMATCH_NOTE } from "@/lib/smc/setups";
-import type { PlaybookRuleDto } from "./rules";
-
-// Playbook v2: ONE pure evaluation from the existing Phase 2/3 views
-// (SmcSnapshot, Alignment, BiasDir, stored calendar events) plus the written
-// rules. No database, no wall clock (`now` is passed in), no LLM, and it never
-// invents a price — every level comes from the caller's proposal or from
-// detected SMC prices. Replaces the Phase 4a evaluateSetups list. The journal
-// stamps playbookVersion 2 from this function at save time and never re-scores.
+import type { Pair, Timeframe } from "@/lib/data/universe";
 
 export const PLAYBOOK_VERSION = 2;
 
 export type Verdict = "allow" | "downgrade" | "block" | "no_setup";
-
-/** A/B from the Phase 3 ranking; C is the v2 floor after downgrades or a block. */
 export type PlaybookGrade = "A" | "B" | "C";
-
 export type PlaybookRuleSeverity = "block" | "downgrade" | "confluence" | "info";
 
-export type PlaybookRuleOutcome = {
-  id: string;
-  severity: PlaybookRuleSeverity;
-  message: string;
-};
-
-export type PlaybookLevels = {
-  entry: number;
-  invalidation: number;
-  target: number;
-  plannedR: number;
-};
-
+export type PlaybookRuleOutcome = { id: string; severity: PlaybookRuleSeverity; message: string; };
+export type PlaybookLevels = { entry: number; invalidation: number; target: number; plannedR: number; };
 export type PlaybookResult = {
-  playbookVersion: 2;
-  verdict: Verdict;
-  grade: PlaybookGrade | null;
-  direction: SetupSide | null;
-  rules: PlaybookRuleOutcome[];
-  levels: PlaybookLevels | null;
+  playbookVersion: 2; verdict: Verdict; grade: PlaybookGrade | null;
+  direction: "long" | "short" | null; rules: PlaybookRuleOutcome[]; levels: PlaybookLevels | null;
 };
 
-/** Fixed side + prices under test (journal logging). An analysis record, not a fill. */
-export type PlaybookProposal = {
-  direction: SetupSide;
-  entry: number;
-  invalidation: number;
-  target: number;
-};
+export type CalendarEventInput = { impact: "high" | "medium"; currency: string; scheduledAt: string; };
+export type LastBosMap = { H1: "long" | "short" | null; H4: "long" | "short" | null; D1: "long" | "short" | null; };
+export type BreakInput = { kind: "BOS" | "CHOCH"; direction: "long" | "short"; barIndex: number; };
+export type ShiftInput = { kind: "BOS" | "CHOCH"; direction: "long" | "short"; brokenLevel: number; barIndex: number; bodyClose: boolean; external: boolean; };
+export type SweepInput = { pool: string; barIndex: number; wickPrice: number; ofRangeExtreme: boolean; closedBackInside: boolean; };
+export type ZoneInput = { kind: "fvg" | "ob"; direction: "long" | "short"; high: number; low: number; mitigated: boolean; formedAt: number; };
+export type PoolInput = { side: "buy" | "sell"; kind: "swing" | "pdh" | "pdl" | "eqh" | "eql" | "asia-high" | "asia-low"; price: number; swept: boolean; };
+export type DealingRangeInput = { high: number; low: number; bothExtremesSwept: boolean; };
+export type M15ZoneInput = { high: number; low: number; mitigated: boolean; formedAt: number; direction: "long" | "short"; };
+export type FundamentalInput = { direction: "long" | "short" | "neutral"; confidence: number; };
 
 export type PlaybookInput = {
-  /** Candidates from rankSetups (Phase 3). Empty → no_setup unless a proposal is given. */
-  setups: Setup[];
-  smc: SmcSnapshot;
-  alignment: Alignment;
-  /** Minimal Phase 2 view: next stored calendar event for the event_window rule. */
-  nextEvent: { impact: string; scheduledAt: string } | null;
-  bias: BiasDir | null;
-  rules: PlaybookRuleDto[];
-  /** Epoch milliseconds — the ONLY clock in the evaluator. Callers pass Date.now(). */
-  now: number;
-  /** When present, this side/levels is evaluated instead of the ranked candidate. */
-  proposal?: PlaybookProposal;
+  pair: Pair; timeframe: Timeframe; now: number; atr14: number | null;
+  fundamental: FundamentalInput | null; previousDay: "long" | "short" | null;
+  calendar: CalendarEventInput[] | null; lastBos: LastBosMap;
+  recentBreaks: BreakInput[]; shift: ShiftInput | null; sweep: SweepInput | null;
+  sweepCandleOpen: number | null; zones: ZoneInput[]; pools: PoolInput[];
+  dealingRange: DealingRangeInput | null; extensionBeyondBreak: number | null;
+  sisterH4Bos: "long" | "short" | null; m15Zone: M15ZoneInput | null;
+  lastBarIndex: number;
 };
 
-type Candidate = {
-  side: SetupSide;
-  grade: PlaybookGrade;
-  entryZone: { low: number; high: number };
-  invalidation: number;
-  /** numeric target when the caller fixed one (proposal); otherwise derived from SMC */
-  fixedTarget: number | null;
-};
-
-function sideMatches(rule: PlaybookRuleDto, side: SetupSide): boolean {
-  return rule.appliesTo === "all" || rule.appliesTo === side;
+function round2(value: number): number {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
 function zonesOverlap(aLow: number, aHigh: number, bLow: number, bHigh: number): boolean {
   return Math.max(aLow, bLow) <= Math.min(aHigh, bHigh);
 }
 
-/** Same 2dp rule as the journal's roundR — kept local to avoid a playbook→journal import cycle. */
-function round2(value: number): number {
-  return Math.round((value + Number.EPSILON) * 100) / 100;
+function pipBuffer(pair: Pair): number {
+  switch (pair) {
+    case "USDJPY": return 0.08;
+    case "XAUUSD": return 0.80;
+    default: return 0.0005;
+  }
 }
 
-/** Prefer the higher grade; first wins ties (rankSetups returns 0–1 setups in practice). */
-function pickBest(setups: Setup[]): Setup | null {
-  let best: Setup | null = null;
-  for (const s of setups) {
-    if (!best || (best.grade === "B" && s.grade === "A")) best = s;
-  }
-  return best;
+function eventMinutesAway(scheduledAt: string, now: number): number {
+  return (new Date(scheduledAt).getTime() - now) / 1000 / 60;
 }
 
-/**
- * Detected target beyond entry: range edge → resting liquidity → swing
- * extreme. Strictly filtered to the profitable side so plannedR stays
- * positive; returns null rather than inventing a price.
- */
-function detectedTarget(smc: SmcSnapshot, side: SetupSide, entry: number): number | null {
-  if (side === "long") {
-    if (smc.range && smc.range.high > entry) return smc.range.high;
-    const pool = smc.liquidity.filter((l) => (l.side === "eqh" || l.side === "highs") && l.price > entry);
-    if (pool.length > 0) return pool[0].price; // liquidity sorts newest-first
-    const highs = smc.swings.filter((s) => s.type === "high" && s.price > entry);
-    if (highs.length > 0) return highs[highs.length - 1].price;
-    return null;
+function eventCurrencies(pair: Pair): string[] {
+  if (pair === "XAUUSD") return ["USD"];
+  return [pair.slice(0, 3), pair.slice(3, 6)];
+}
+
+function hasHighImpactNear(events: CalendarEventInput[] | null, pair: Pair, now: number, windowMinutes: number): CalendarEventInput | null {
+  if (!events) return null;
+  const ccy = eventCurrencies(pair);
+  for (const e of events) {
+    if (!ccy.includes(e.currency)) continue;
+    if (e.impact !== "high") continue;
+    const mins = Math.abs(eventMinutesAway(e.scheduledAt, now));
+    if (mins <= windowMinutes) return e;
   }
-  if (smc.range && smc.range.low < entry) return smc.range.low;
-  const pool = smc.liquidity.filter((l) => (l.side === "eql" || l.side === "lows") && l.price < entry);
-  if (pool.length > 0) return pool[0].price;
-  const lows = smc.swings.filter((s) => s.type === "low" && s.price < entry);
-  if (lows.length > 0) return lows[lows.length - 1].price;
   return null;
 }
 
-type FireResult = { fired: boolean; note: string };
-
-/** The four written conditions (whenJson kinds) — `now` replaces v1's Date.now() read. */
-function checkRule(
-  when: NonNullable<PlaybookRuleDto["when"]>,
-  side: SetupSide,
-  entryZone: { low: number; high: number },
-  smc: SmcSnapshot,
-  alignment: Alignment,
-  nextEvent: PlaybookInput["nextEvent"],
-  now: number,
-): FireResult {
-  switch (when.kind) {
-    case "ob_overlap": {
-      const obs = smc.orderBlocks.filter((o) => o.kind === when.obKind && !o.mitigated);
-      const hit = obs.find((o) => zonesOverlap(entryZone.low, entryZone.high, o.low, o.high));
-      if (!hit) return { fired: false, note: "" };
-      return {
-        fired: true,
-        note: `entry ${entryZone.low}–${entryZone.high} overlaps unmitigated ${when.obKind} OB ${hit.low}–${hit.high}`,
-      };
-    }
-    case "not_aligned": {
-      if (alignment === "ALIGNED") return { fired: false, note: "" };
-      return { fired: true, note: `alignment is ${alignment}, not ALIGNED` };
-    }
-    case "event_window": {
-      if (!nextEvent || nextEvent.impact !== "high") return { fired: false, note: "" };
-      const at = new Date(nextEvent.scheduledAt).getTime();
-      if (!Number.isFinite(at)) return { fired: false, note: "" };
-      // Fire only when the event is upcoming within the window relative to the
-      // PASSED-IN now — never for past events and never invented ones (stored
-      // calendar time only).
-      if (at > now && at - now <= when.minutes * 60 * 1000) {
-        return { fired: true, note: `high-impact event within ${when.minutes}m (${nextEvent.scheduledAt})` };
-      }
-      return { fired: false, note: "" };
-    }
-    case "premium_discount": {
-      if (!smc.range) return { fired: false, note: "" };
-      const entryMid = (entryZone.low + entryZone.high) / 2;
-      if (side === "long" && entryMid > smc.range.midpoint) {
-        return { fired: true, note: `long entry midpoint ${entryMid} above range midpoint ${smc.range.midpoint} (premium)` };
-      }
-      if (side === "short" && entryMid < smc.range.midpoint) {
-        return { fired: true, note: `short entry midpoint ${entryMid} below range midpoint ${smc.range.midpoint} (discount)` };
-      }
-      return { fired: false, note: "" };
-    }
+function hasMediumImpactNear(events: CalendarEventInput[] | null, pair: Pair, now: number, windowMinutes: number): CalendarEventInput | null {
+  if (!events) return null;
+  const ccy = eventCurrencies(pair);
+  for (const e of events) {
+    if (!ccy.includes(e.currency)) continue;
+    if (e.impact !== "medium") continue;
+    const mins = Math.abs(eventMinutesAway(e.scheduledAt, now));
+    if (mins <= windowMinutes) return e;
   }
+  return null;
 }
 
-/**
- * Evaluate the ONE candidate against every enabled, side-matching rule
- * (callers pass rules pre-sorted). block → verdict "block" + grade C; each
- * downgrade steps the grade once (A→B→C, floor C); no candidate → "no_setup".
- * confluence/info outcomes are recorded context only — the playbook only ever
- * constrains, it never inflates a grade.
- */
+function isInSession(pair: Pair, openTimeMs: number): boolean {
+  const d = new Date(openTimeMs);
+  const h = d.getUTCHours() + d.getUTCMinutes() / 60;
+  const sessions: [number, number][] = pair === "USDJPY" ? [[0, 3], [7, 10], [12, 16]] : [[7, 10], [12, 16]];
+  return sessions.some(([s, e]) => h >= s && h < e);
+}
+
 export function evaluatePlaybook(input: PlaybookInput): PlaybookResult {
-  const { setups, smc, alignment, nextEvent, bias, rules, now, proposal } = input;
+  const {
+    pair, timeframe, now, atr14, fundamental, previousDay, calendar,
+    lastBos, recentBreaks, shift, sweep, sweepCandleOpen, zones, pools,
+    dealingRange, extensionBeyondBreak, sisterH4Bos, m15Zone, lastBarIndex,
+  } = input;
 
-  // --- Candidate (fixed proposal, else the best ranked setup) -----------------
-  let candidate: Candidate | null;
-  if (proposal) {
-    const matched = setups.find((s) => s.side === proposal.direction) ?? null;
-    candidate = {
-      side: proposal.direction,
-      grade: matched ? matched.grade : "B",
-      entryZone: { low: proposal.entry, high: proposal.entry },
-      invalidation: proposal.invalidation,
-      fixedTarget: proposal.target,
-    };
-  } else {
-    const best = pickBest(setups);
-    candidate = best
-      ? { side: best.side, grade: best.grade, entryZone: best.entryZone, invalidation: best.invalidation, fixedTarget: null }
-      : null;
-  }
-
-  if (!candidate) {
-    return {
-      playbookVersion: 2,
-      verdict: "no_setup",
-      grade: null,
-      direction: null,
-      rules: [
-        {
-          id: "core.no_setup",
-          severity: "info",
-          message: "No setup — SMC structure and fundamental bias give no candidate here.",
-        },
-      ],
-      levels: null,
-    };
-  }
-
-  // --- Written rules (stored whenJson conditions only) ------------------------
   const out: PlaybookRuleOutcome[] = [];
-  let blocked = false;
-  let downgrades = 0;
-  for (const rule of rules) {
-    if (!rule.enabled) continue;
-    if (!sideMatches(rule, candidate.side)) continue;
-    if (rule.when === null) continue; // unknown/unparseable kind: ignore, never crash
-    const { fired, note } = checkRule(rule.when, candidate.side, candidate.entryZone, smc, alignment, nextEvent, now);
-    if (!fired) continue;
-    out.push({ id: rule.id, severity: rule.severity, message: `${rule.title} — ${note}` });
-    if (rule.severity === "block") blocked = true;
-    else if (rule.severity === "downgrade") downgrades += 1;
+  let direction: "long" | "short" | null = null;
+  let rangeException = false;
+
+  if (timeframe === "D1") {
+    out.push({ id: "PB-INFO-D1", severity: "info", message: "D1 is narrative only — no setup on this timeframe." });
+    return { playbookVersion: 2, verdict: "no_setup", grade: null, direction: null, rules: out, levels: null };
+  }
+  if (timeframe === "M15" && !shift) {
+    out.push({ id: "PB-INFO-M15", severity: "info", message: "M15 has no confirming shift yet." });
+    return { playbookVersion: 2, verdict: "no_setup", grade: null, direction: null, rules: out, levels: null };
+  }
+  if (!sweep) {
+    out.push({ id: "PB-INFO-NO-SWEEP", severity: "info", message: "No sweep detected — nothing to trade." });
+    return { playbookVersion: 2, verdict: "no_setup", grade: null, direction: null, rules: out, levels: null };
+  }
+  if (lastBarIndex - sweep.barIndex > 30) {
+    out.push({ id: "PB-INFO-STALE-SWEEP", severity: "info", message: "Sweep is stale — more than 30 bars old." });
+    return { playbookVersion: 2, verdict: "no_setup", grade: null, direction: null, rules: out, levels: null };
+  }
+  if (!sweep.closedBackInside) {
+    out.push({ id: "PB-INFO-RUN", severity: "info", message: "Candle closed through the pool — that's a run, not a reversal." });
+    return { playbookVersion: 2, verdict: "no_setup", grade: null, direction: null, rules: out, levels: null };
+  }
+  if (!shift) {
+    out.push({ id: "PB-INFO-NO-SHIFT", severity: "info", message: "No confirming shift after the sweep." });
+    return { playbookVersion: 2, verdict: "no_setup", grade: null, direction: null, rules: out, levels: null };
+  }
+  if (!shift.bodyClose) {
+    out.push({ id: "PB-INFO-WICK", severity: "info", message: "Shift is a wick only — no body close beyond the swing." });
+    return { playbookVersion: 2, verdict: "no_setup", grade: null, direction: null, rules: out, levels: null };
+  }
+  if (!shift.external) {
+    out.push({ id: "PB-INFO-INTERNAL", severity: "info", message: "Shift is an internal swing, not an external break." });
+    return { playbookVersion: 2, verdict: "no_setup", grade: null, direction: null, rules: out, levels: null };
+  }
+  direction = shift.direction;
+  const freshZonesEarly = zones.filter((z) =>
+    !z.mitigated && z.formedAt >= shift.barIndex && z.direction === direction,
+  );
+  const anyZoneDirAfterShiftEarly = zones.some((z) =>
+    z.formedAt >= shift.barIndex && z.direction === direction,
+  );
+  const mitigatedOnly = anyZoneDirAfterShiftEarly && freshZonesEarly.length === 0;
+  const allowMitigatedFallback = mitigatedOnly;
+  const anyZoneAfterShift = zones.some((z) => z.formedAt >= shift.barIndex);
+  if (!anyZoneAfterShift) {
+    out.push({ id: "PB-INFO-NO-ZONE", severity: "info", message: "No zone formed at or after the shift." });
+    return { playbookVersion: 2, verdict: "no_setup", grade: null, direction: null, rules: out, levels: null };
+  }
+  if (!fundamental) {
+    out.push({ id: "PB-INFO-NO-BIAS", severity: "info", message: "No fundamental bias snapshot — grade capped at B." });
+  }
+  if (!calendar) {
+    out.push({ id: "PB-INFO-NO-CAL", severity: "info", message: "Calendar feed missing — event blocks/downgrades skipped." });
   }
 
-  // --- Grade + verdict --------------------------------------------------------
-  let grade: PlaybookGrade = candidate.grade;
-  for (let i = 0; i < downgrades && grade !== "C"; i++) grade = grade === "A" ? "B" : "C";
-  const verdict: Verdict = blocked ? "block" : downgrades > 0 ? "downgrade" : "allow";
-  if (blocked) grade = "C";
-
-  // --- Core context (info only — labels from the SAME bias/SMC views) ---------
-  const fundDir = bias === "bullish" || bias === "bearish" ? bias : null;
-  out.push({
-    id: "core.bias",
-    severity: "info",
-    message: bias ? `Fundamentals: ${bias}` : "Fundamentals: no bias snapshot yet",
-  });
-  if (smc.htfBias !== "range" && fundDir !== null && smc.htfBias !== fundDir) {
-    out.push({ id: "core.mismatch", severity: "info", message: MISMATCH_NOTE });
+  let entry: number | null = null;
+  if (timeframe === "M15" && m15Zone && !m15Zone.mitigated
+    && m15Zone.formedAt >= shift.barIndex && m15Zone.direction === direction) {
+    const overlapsH1 = zones.some((z) =>
+      z.formedAt >= shift.barIndex && z.direction === direction
+      && zonesOverlap(m15Zone.low, m15Zone.high, z.low, z.high),
+    );
+    if (overlapsH1) {
+      entry = direction === "long" ? m15Zone.high : m15Zone.low;
+    }
   }
-  if (proposal && !setups.some((s) => s.side === proposal.direction)) {
-    out.push({
-      id: "core.manual",
-      severity: "info",
-      message: "No ranked setup on this side — logged as a manual idea (grade floor B).",
-    });
+  if (entry === null) {
+    const fvg = zones.find((z) =>
+      !z.mitigated && z.formedAt >= shift.barIndex
+      && z.direction === direction && z.kind === "fvg",
+    );
+    if (fvg) {
+      entry = direction === "long" ? fvg.high : fvg.low;
+    } else {
+      const ob = zones.find((z) =>
+        !z.mitigated && z.formedAt >= shift.barIndex
+        && z.direction === direction && z.kind === "ob",
+      );
+      if (ob) entry = (ob.low + ob.high) / 2;
+    }
   }
-
-  // --- Levels: caller-fixed prices or detected SMC prices only ----------------
-  const entry = (candidate.entryZone.low + candidate.entryZone.high) / 2;
-  const target = candidate.fixedTarget ?? detectedTarget(smc, candidate.side, entry);
-  const risk = Math.abs(entry - candidate.invalidation);
+  if (entry === null && allowMitigatedFallback) {
+    const fvgAny = zones.find((z) =>
+      z.formedAt >= shift.barIndex
+      && z.direction === direction && z.kind === "fvg",
+    );
+    if (fvgAny) {
+      entry = direction === "long" ? fvgAny.high : fvgAny.low;
+    } else {
+      const obAny = zones.find((z) =>
+        z.formedAt >= shift.barIndex
+        && z.direction === direction && z.kind === "ob",
+      );
+      if (obAny) entry = (obAny.low + obAny.high) / 2;
+    }
+  }
+  const atrBuffer = atr14 ? atr14 * 0.1 : pipBuffer(pair);
+  const invalidation = direction === "long"
+    ? sweep.wickPrice - atrBuffer
+    : sweep.wickPrice + atrBuffer;
+  const risk = entry !== null ? Math.abs(entry - invalidation) : 0;
+  let target: number | null = null;
+  const opposingSide = direction === "long" ? "buy" : "sell";
+  const candidatePools = pools.filter((p) => p.side === opposingSide && !p.swept);
+  if (entry !== null) {
+    if (direction === "long") {
+      const above = candidatePools.filter((p) => p.price > entry).sort((a, b) => a.price - b.price);
+      target = above.length > 0 ? above[0].price : null;
+    } else {
+      const below = candidatePools.filter((p) => p.price < entry).sort((a, b) => b.price - a.price);
+      target = below.length > 0 ? below[0].price : null;
+    }
+  }
+  if (dealingRange && dealingRange.bothExtremesSwept && sweep.ofRangeExtreme) {
+    rangeException = true;
+    const oppExtreme = direction === "long" ? dealingRange.high : dealingRange.low;
+    const mid = (dealingRange.high + dealingRange.low) / 2;
+    if (entry !== null && risk > 0) {
+      const rewardToOpp = Math.abs(oppExtreme - entry);
+      if (rewardToOpp / risk >= 2) target = oppExtreme;
+      else target = mid;
+    }
+  }
+  const plannedR = entry !== null && risk > 0 && target !== null
+    ? round2(Math.abs(target - entry) / risk)
+    : 0;
   let levels: PlaybookLevels | null = null;
-  if (target !== null && risk > 0) {
-    levels = {
-      entry,
-      invalidation: candidate.invalidation,
-      target,
-      plannedR: round2(Math.abs(target - entry) / risk),
-    };
-  } else {
-    out.push({
-      id: "core.levels",
-      severity: "info",
-      message:
-        target === null
-          ? "No detected target beyond entry — levels withheld."
-          : "Entry and invalidation are the same price — nothing to size.",
-    });
+  if (entry !== null && risk > 0 && target !== null) {
+    levels = { entry, invalidation, target, plannedR };
+  }
+  if (entry === null || risk <= 0) {
+    out.push({ id: "PB-INFO-ZERO-RISK", severity: "info", message: "Risk is zero or less — levels withheld." });
+    return { playbookVersion: 2, verdict: "no_setup", grade: null, direction: null, rules: out, levels: null };
+  }
+  if (target === null) {
+    out.push({ id: "PB-INFO-NO-TARGET", severity: "info", message: "No unswept opposing pool beyond entry — no target." });
+    return { playbookVersion: 2, verdict: "no_setup", grade: null, direction: null, rules: out, levels: null };
   }
 
-  return { playbookVersion: 2, verdict, grade, direction: candidate.side, rules: out, levels };
+  const alignmentTfs: string[] = timeframe === "H4" ? ["D1"] : ["H4", "D1"];
+  const parentTf: string = timeframe === "H4" ? "D1" : "H4";
+  function tfOpposes(tf: string): boolean {
+    const v = lastBos[tf as keyof LastBosMap];
+    return v !== null && v !== direction;
+  }
+  function tfAgrees(tf: string): boolean {
+    const v = lastBos[tf as keyof LastBosMap];
+    return v !== null && v === direction;
+  }
+  const alignmentOpposes = alignmentTfs.filter(tfOpposes);
+  const parentOpposes = tfOpposes(parentTf);
+
+  const freshZones = zones.filter((z) =>
+    !z.mitigated && z.formedAt >= shift.barIndex && z.direction === direction,
+  );
+  const anyZoneDirAfterShift = zones.some((z) =>
+    z.formedAt >= shift.barIndex && z.direction === direction,
+  );
+  if (anyZoneDirAfterShift && freshZones.length === 0) {
+    out.push({ id: "PB-BLK-MITIGATED", severity: "block", message: "The only zone is already mitigated — no valid entry area." });
+  }
+  if (alignmentOpposes.length === alignmentTfs.length && alignmentTfs.length > 0) {
+    out.push({ id: "PB-BLK-HTF", severity: "block", message: "Every alignment timeframe's last BOS opposes the setup direction." });
+  }
+  if (parentOpposes) {
+    out.push({ id: "PB-BLK-COUNTER", severity: "block", message: "External parent trend opposes the setup direction." });
+  }
+  if (fundamental && fundamental.direction !== "neutral"
+    && fundamental.direction !== direction && fundamental.confidence >= 70) {
+    out.push({ id: "PB-BLK-BIAS", severity: "block", message: "Fundamental bias opposes with high confidence." });
+  }
+  if (calendar) {
+    const blkEvent = hasHighImpactNear(calendar, pair, now, 15);
+    if (blkEvent) {
+      out.push({ id: "PB-BLK-EVENT", severity: "block", message: "High-impact " + blkEvent.currency + " event within 15 minutes." });
+    }
+  }
+  if (dealingRange && !sweep.ofRangeExtreme && entry !== null) {
+    const mid = (dealingRange.high + dealingRange.low) / 2;
+    const locBlocked = direction === "long" ? entry > mid : entry < mid;
+    if (locBlocked) {
+      out.push({ id: "PB-BLK-LOCATION", severity: "block", message: "Entry is on the wrong side of the dealing-range midpoint." });
+    }
+  }
+  if (plannedR < 1.5) {
+    out.push({ id: "PB-BLK-RR", severity: "block", message: "Planned R " + plannedR + " is below 1.5 minimum." });
+  }
+  if (!rangeException && recentBreaks.length >= 3) {
+    const last3 = recentBreaks.slice(-3);
+    const alternates = last3[0].kind !== last3[1].kind && last3[1].kind !== last3[2].kind;
+    const noAlignmentBos = alignmentTfs.every((tf) => !tfAgrees(tf));
+    if (alternates && noAlignmentBos) {
+      out.push({ id: "PB-BLK-CHOP", severity: "block", message: "Choppy alternating breaks with no higher-timeframe BOS in setup direction." });
+    }
+  }
+
+  const blkCounterFired = out.some((r) => r.id === "PB-BLK-COUNTER");
+  if (!blkCounterFired && alignmentOpposes.length === 1 && !parentOpposes) {
+    out.push({ id: "PB-DG-ONE-TF", severity: "downgrade", message: "Exactly one alignment timeframe opposes — not the parent trend." });
+  }
+  if (fundamental) {
+    if (fundamental.direction === "neutral") {
+      out.push({ id: "PB-DG-BIAS-SOFT", severity: "downgrade", message: "Fundamental bias is neutral." });
+    } else if (fundamental.direction !== direction && fundamental.confidence < 70) {
+      out.push({ id: "PB-DG-BIAS-SOFT", severity: "downgrade", message: "Fundamental bias opposes with low confidence." });
+    }
+  }
+  if (dealingRange && entry !== null) {
+    const rangePct = (entry - dealingRange.low) / (dealingRange.high - dealingRange.low);
+    if (rangePct >= 0.45 && rangePct <= 0.55) {
+      out.push({ id: "PB-DG-EQ", severity: "downgrade", message: "Entry is inside the middle 45-55% of the dealing range." });
+    }
+  }
+  if (sweepCandleOpen === null || !isInSession(pair, sweepCandleOpen)) {
+    out.push({ id: "PB-DG-SESSION", severity: "downgrade", message: "Sweep candle opened outside the pair's trading session." });
+  }
+  if (atr14 && extensionBeyondBreak !== null && extensionBeyondBreak > atr14 * 1.5) {
+    out.push({ id: "PB-DG-LATE", severity: "downgrade", message: "Extension beyond the break exceeds 1.5 ATR(14)." });
+  }
+  if (plannedR >= 1.5 && plannedR < 2) {
+    out.push({ id: "PB-DG-RR", severity: "downgrade", message: "Planned R " + plannedR + " is between 1.5 and 2." });
+  }
+  const blkEventFired = out.some((r) => r.id === "PB-BLK-EVENT");
+  if (calendar && !blkEventFired) {
+    const ccy = eventCurrencies(pair);
+    let newsDowngrade = false;
+    for (const e of calendar) {
+      if (!ccy.includes(e.currency)) continue;
+      const mins = eventMinutesAway(e.scheduledAt, now);
+      if (e.impact === "high" && mins > 15 && mins <= 90) { newsDowngrade = true; break; }
+      if (e.impact === "medium" && mins > 0 && mins <= 30) { newsDowngrade = true; break; }
+    }
+    if (newsDowngrade) {
+      out.push({ id: "PB-DG-NEWS", severity: "downgrade", message: "High-impact event 15-90 minutes ahead, or medium-impact within 30 minutes." });
+    }
+  }
+  if ((pair === "EURUSD" || pair === "GBPUSD") && sisterH4Bos !== null && sisterH4Bos !== direction) {
+    out.push({ id: "PB-DG-CORR", severity: "downgrade", message: "Sister pair's H4 BOS opposes the setup direction." });
+  }
+  const hasFreshFVG = freshZones.some((z) => z.kind === "fvg");
+  const hasFreshOB = freshZones.some((z) => z.kind === "ob");
+  if (hasFreshOB && !hasFreshFVG) {
+    out.push({ id: "PB-DG-NO-FVG", severity: "downgrade", message: "The only fresh zone is an order block — no fair value gap." });
+  }
+  if (previousDay !== null && previousDay !== direction) {
+    out.push({ id: "PB-DG-PREV-DAY", severity: "downgrade", message: "Previous daily candle direction opposes the setup." });
+  }
+
+  if (alignmentTfs.length > 0 && alignmentTfs.every(tfAgrees)) {
+    out.push({ id: "PB-CF-HTF", severity: "confluence", message: "Every alignment timeframe's BOS agrees with the setup direction." });
+  }
+  if (fundamental && fundamental.direction === direction && fundamental.confidence >= 60) {
+    out.push({ id: "PB-CF-BIAS", severity: "confluence", message: "Fundamental bias agrees with confidence of 60 or higher." });
+  }
+  if (sweepCandleOpen !== null && isInSession(pair, sweepCandleOpen)) {
+    out.push({ id: "PB-CF-KILLZONE", severity: "confluence", message: "Sweep candle opened inside the pair's trading session." });
+  }
+  if (sweep && ["asia-high", "asia-low", "pdh", "pdl", "eqh", "eql"].includes(sweep.pool)) {
+    out.push({ id: "PB-CF-EXTREME", severity: "confluence", message: "Swept pool is Asia, prior-day, or equal highs/lows." });
+  }
+  if (shift && shift.kind === "CHOCH" && shift.bodyClose) {
+    out.push({ id: "PB-CF-CHOCH", severity: "confluence", message: "Confirming shift is a body-close change of character." });
+  }
+  if (timeframe === "M15" && m15Zone && !m15Zone.mitigated
+    && m15Zone.formedAt >= shift.barIndex && m15Zone.direction === direction) {
+    const overlapsH1 = zones.some((z) =>
+      z.formedAt >= shift.barIndex && z.direction === direction
+      && zonesOverlap(m15Zone.low, m15Zone.high, z.low, z.high),
+    );
+    if (overlapsH1) {
+      out.push({ id: "PB-CF-LTF", severity: "confluence", message: "M15 entry is a fresh zone inside the H1 zone." });
+    }
+  }
+  const freshFvg = zones.find((z) =>
+    !z.mitigated && z.formedAt >= shift.barIndex
+    && z.direction === direction && z.kind === "fvg",
+  );
+  const freshOb = zones.find((z) =>
+    !z.mitigated && z.formedAt >= shift.barIndex
+    && z.direction === direction && z.kind === "ob",
+  );
+  if (freshFvg && freshOb && zonesOverlap(freshFvg.low, freshFvg.high, freshOb.low, freshOb.high)) {
+    out.push({ id: "PB-CF-OVERLAP", severity: "confluence", message: "Entry sits in the overlap of a fresh gap and a fresh order block." });
+  }
+  if (plannedR >= 3 && entry !== null) {
+    const poolInside1R = pools.some((p) =>
+      !p.swept && Math.abs(p.price - entry) <= risk * 1,
+    );
+    if (!poolInside1R) {
+      out.push({ id: "PB-CF-ROOM", severity: "confluence", message: "Planned R is 3 or more with no unswept pool inside 1R." });
+    }
+  }
+  if (previousDay !== null && previousDay === direction) {
+    out.push({ id: "PB-CF-PREV-DAY", severity: "confluence", message: "Previous daily candle agrees with the setup direction." });
+  }
+
+  const confluences = out.filter((r) => r.severity === "confluence").length;
+  const downgrades = out.filter((r) => r.severity === "downgrade").length;
+  const blocked = out.some((r) => r.severity === "block");
+
+  const hasCFHTF = out.some((r) => r.id === "PB-CF-HTF");
+  const hasCFBIAS = out.some((r) => r.id === "PB-CF-BIAS");
+  const hasCFEXTREME = out.some((r) => r.id === "PB-CF-EXTREME");
+  const hasCFCHOCH = out.some((r) => r.id === "PB-CF-CHOCH");
+  const plannedR2 = plannedR >= 2;
+  const noDgSession = !out.some((r) => r.id === "PB-DG-SESSION");
+  const noDgPrevDay = !out.some((r) => r.id === "PB-DG-PREV-DAY");
+  const noDgNoFvg = !out.some((r) => r.id === "PB-DG-NO-FVG");
+  const moreCFthanDG = confluences > downgrades;
+
+  const gradeA = hasCFHTF && hasCFBIAS && hasCFEXTREME && hasCFCHOCH
+    && plannedR2 && noDgSession && noDgPrevDay && noDgNoFvg
+    && moreCFthanDG && !rangeException;
+
+  let grade: PlaybookGrade | null;
+  if (gradeA) {
+    grade = "A";
+  } else if (downgrades - confluences >= 2) {
+    grade = "C";
+  } else {
+    grade = "B";
+  }
+  if (rangeException && grade === "A") grade = "B";
+  if (out.some((r) => r.id === "PB-INFO-NO-BIAS") && grade === "A") grade = "B";
+
+  let verdict: Verdict;
+  if (blocked) {
+    verdict = "block";
+    grade = null;
+  } else {
+    const dgOneTf = out.some((r) => r.id === "PB-DG-ONE-TF");
+    const dgPrevDay = out.some((r) => r.id === "PB-DG-PREV-DAY");
+    const dgOutnumberCF = downgrades > confluences;
+    verdict = (dgOneTf || dgPrevDay || dgOutnumberCF) ? "downgrade" : "allow";
+  }
+
+  return { playbookVersion: 2, verdict, grade, direction, rules: out, levels };
 }
