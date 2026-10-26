@@ -6,15 +6,16 @@ services:
     buildCommand: npm ci && npx prisma generate && npm run build
     startCommand: npx prisma migrate deploy && npm run start
     envVars:
-      DATABASE_URL: file:/data/desk.db
-      PRICE_PROVIDER: mock
-      TWELVEDATA_API_KEY: ""
+      DATABASE_URL: file:./dev.db
+      PRICE_PROVIDER: twelvedata
+      TWELVEDATA_API_KEY: "a3bb065d61a64d2ab0426bd03a956b83"
       POLYGON_API_KEY: ""
       OANDA_API_KEY: ""
       OANDA_ACCOUNT_ID: ""
-      NEWS_PROVIDER: mock
-      FINNHUB_API_KEY: ""
+      NEWS_PROVIDER: finnhub
+      FINNHUB_API_KEY: "db71nbhr01qspnlg30igdb71nbhr01qspnlg30j0"
       NEWS_API_KEY: ""
+      CALENDAR_PROVIDER: faireconomy
     # Mount a persistent disk at /data
     disk:
       name: data
