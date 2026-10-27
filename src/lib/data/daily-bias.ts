@@ -266,29 +266,41 @@ export async function storeDailyBias(result: DailyBiasResult): Promise<void> {
 
 /** Get the latest stored daily bias for a pair. Returns null if none exists. */
 export async function getLatestDailyBias(pair: Pair): Promise<DailyBiasResult | null> {
-  const row = await prisma.dailyBias.findFirst({
-    where: { pair },
-    orderBy: { asOf: "desc" },
-  });
-  if (!row) return null;
-  return rowToDailyBiasResult(row);
+  try {
+    const row = await prisma.dailyBias.findFirst({
+      where: { pair },
+      orderBy: { asOf: "desc" },
+    });
+    if (!row) return null;
+    return rowToDailyBiasResult(row);
+  } catch (err) {
+    // Column may not exist yet (migration not deployed); return null instead of crashing
+    console.error(`[getLatestDailyBias] error for ${pair}:`, err);
+    return null;
+  }
 }
 
 /** Get the latest stored daily bias for all pairs (newest per pair). */
 export async function getAllDailyBias(): Promise<DailyBiasResult[]> {
-  const rows = await prisma.dailyBias.findMany({
-    orderBy: { asOf: "desc" },
-  });
-  const seen = new Set<Pair>();
-  const out: DailyBiasResult[] = [];
-  for (const row of rows) {
-    const p = row.pair as Pair;
-    if (seen.has(p)) continue;
-    seen.add(p);
-    const r = rowToDailyBiasResult(row);
-    if (r) out.push(r);
+  try {
+    const rows = await prisma.dailyBias.findMany({
+      orderBy: { asOf: "desc" },
+    });
+    const seen = new Set<Pair>();
+    const out: DailyBiasResult[] = [];
+    for (const row of rows) {
+      const p = row.pair as Pair;
+      if (seen.has(p)) continue;
+      seen.add(p);
+      const r = rowToDailyBiasResult(row);
+      if (r) out.push(r);
+    }
+    return out;
+  } catch (err) {
+    // Column may not exist yet (migration not deployed); return empty array instead of crashing
+    console.error("[getAllDailyBias] error:", err);
+    return [];
   }
-  return out;
 }
 
 function rowToDailyBiasResult(row: {
