@@ -42,6 +42,8 @@ export const DEMAND_FILL = "rgba(56,189,248,0.16)";
 export const DEMAND_BORDER = "rgba(56,189,248,0.65)";
 export const SUPPLY_FILL = "rgba(168,85,247,0.16)";
 export const SUPPLY_BORDER = "rgba(168,85,247,0.65)";
+export const ABSORPTION_FILL = "rgba(236,72,153,0.14)"; // pink/purple for absorption
+export const ABSORPTION_BORDER = "rgba(236,72,153,0.55)";
 
 // Sweep markers (rejection / stop-hunt): amber, downward chevron (buy-side
 // sweep → price rejected) or upward chevron (sell-side sweep → price rejected).
@@ -221,6 +223,32 @@ export function PairChart({ candles, smc }: PairChartProps) {
           text: `RUN ${r.direction === "bullish" ? "&#8594;" : "&#8592;"}`,
         });
       }
+      // Absorption/stagnation markers: pink diamond showing where momentum stalled
+      // after entering an OB/FVG zone. Only show if absorption is true.
+      if (smc?.absorption) {
+        // Find order blocks near the end that have absorption
+        const absObBlocks = smc.orderBlocks.filter((ob) => ob.index >= smc.candleCount - 20);
+        for (const ob of absObBlocks.slice(-3)) {
+          markers.push({
+            time: toTime(ob.epoch),
+            position: ob.direction === "bullish" ? "belowBar" : "aboveBar",
+            color: ABSORPTION_FILL,
+            shape: "square",
+            text: `ABŚ${ob.direction === "bullish" ? "▲" : "▼"}`,
+          });
+        }
+        // Find FVGs near the end that have absorption
+        const absFvgs = smc.fvgs.filter((fvg) => fvg.index >= smc.candleCount - 20);
+        for (const fvg of absFvgs.slice(-3)) {
+          markers.push({
+            time: toTime(fvg.epoch),
+            position: fvg.direction === "bullish" ? "belowBar" : "aboveBar",
+            color: ABSORPTION_FILL,
+            shape: "square",
+            text: `FGV${fvg.direction === "bullish" ? "▲" : "▼"}`,
+          });
+        }
+      }
       // Asia sweep markers.
       if (smc?.asia) {
         for (const a of smc.asia) {
@@ -259,6 +287,7 @@ export function PairChart({ candles, smc }: PairChartProps) {
         <span><span className="mr-1 inline-block h-2 w-3 rounded-sm" style={{ background: BEAR_FVG_FILL, border: `1px solid ${BEAR_FVG_BORDER}` }} />bearish FVG</span>
         <span><span className="mr-1 inline-block h-2 w-3 rounded-sm" style={{ background: DEMAND_FILL, border: `1px solid ${DEMAND_BORDER}` }} />demand OB</span>
         <span><span className="mr-1 inline-block h-2 w-3 rounded-sm" style={{ background: SUPPLY_FILL, border: `1px solid ${SUPPLY_BORDER}` }} />supply OB</span>
+        <span><span className="mr-1 inline-block h-2 w-3 rounded-sm" style={{ background: ABSORPTION_FILL, border: `1px solid ${ABSORPTION_BORDER}` }} />absorption/stagnation</span>
         <span className="text-slate-500">BOS/CHOCH &#10003; SWEEP amber RUN emerald-rose dashed = premium/discount mid</span>
       </div>
     </div>

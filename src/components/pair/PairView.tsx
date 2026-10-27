@@ -181,6 +181,11 @@ export function PairView({ symbol, initialTimeframe }: { symbol: Pair; initialTi
           {smc && (
             <p className="mt-2 text-xs text-slate-500">
               {smc.candleCount} candles · {smc.swings.length} swings · {smc.bos.length} BOS · {smc.choch.length} CHOCH · {smc.fvgs.length} FVG · {smc.orderBlocks.length} OB · asOf {smc.asOf.slice(0, 16).replace("T", " ")} UTC
+              {smc.absorption && (
+                <span className="ml-2 rounded bg-pink-500/20 px-1.5 py-0.5 text-pink-300">
+                  ABSORPTION {smc.absorptionScore > 0 ? `(${smc.absorptionScore}%)` : ""}
+                </span>
+              )}
             </p>
           )}
         </div>

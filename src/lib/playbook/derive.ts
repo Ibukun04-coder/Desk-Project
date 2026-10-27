@@ -98,5 +98,8 @@ export function derivePlaybookInput(
     sisterH4Bos: null,
     m15Zone: null,
     lastBarIndex: numeric.length - 1,
+    // Absorption/stagnation flags for playbook rules
+    absorption: smc.absorption,
+    absorptionScore: smc.absorptionScore,
   };
 }

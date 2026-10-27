@@ -23,7 +23,7 @@ function baseInput(overrides: Partial<Parameters<typeof evaluatePlaybook>[0]>): 
     "EURUSD",
     "H1",
     [],
-    { symbol: "EURUSD", timeframe: "H1", asOf: new Date(NOW).toISOString(), candleCount: 0, swings: [], bos: [], choch: [], fvgs: [], orderBlocks: [], liquidity: [], sweeps: [], runs: [], asia: [], range: null, htfBias: "range" },
+    { symbol: "EURUSD", timeframe: "H1", asOf: new Date(NOW).toISOString(), candleCount: 0, swings: [], bos: [], choch: [], fvgs: [], orderBlocks: [], liquidity: [], sweeps: [], runs: [], asia: [], range: null, htfBias: "range", absorption: false, absorptionScore: 0 },
     mockBias,
     null,
     NOW,

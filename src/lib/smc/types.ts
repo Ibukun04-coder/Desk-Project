@@ -141,6 +141,11 @@ export type SmcSnapshot = {
   asia: AsiaLiquidity[];      // Asia session high/low liquidity pools + sweep status
   range: SmcRange | null;
   htfBias: HtfBias; // from last BOS/CHOCH only — never from news
+  /** Absorption/stagnation flag: true when price entered an OB/FVG zone and momentum stalled
+   * (smaller bodies, longer wicks, no new extremes). Indicates opposing side absorbing orders. */
+  absorption: boolean;
+  /** Absorption strength score 0-100: higher = clearer stagnation signal (0 = none, 100 = strong) */
+  absorptionScore: number;
 };
 
 export type SetupGrade = "A" | "B";

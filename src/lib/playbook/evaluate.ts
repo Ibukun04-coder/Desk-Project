@@ -33,6 +33,9 @@ export type PlaybookInput = {
   dealingRange: DealingRangeInput | null; extensionBeyondBreak: number | null;
   sisterH4Bos: "long" | "short" | null; m15Zone: M15ZoneInput | null;
   lastBarIndex: number;
+  // Absorption/stagnation fields from SMC
+  absorption?: boolean;
+  absorptionScore?: number;
 };
 
 function round2(value: number): number {
@@ -96,6 +99,7 @@ export function evaluatePlaybook(input: PlaybookInput): PlaybookResult {
     pair, timeframe, now, atr14, fundamental, previousDay, calendar,
     lastBos, recentBreaks, shift, sweep, sweepCandleOpen, zones, pools,
     dealingRange, extensionBeyondBreak, sisterH4Bos, m15Zone, lastBarIndex,
+    absorption, absorptionScore,
   } = input;
 
   const out: PlaybookRuleOutcome[] = [];
@@ -394,6 +398,9 @@ export function evaluatePlaybook(input: PlaybookInput): PlaybookResult {
   }
   if (previousDay !== null && previousDay === direction) {
     out.push({ id: "PB-CF-PREV-DAY", severity: "confluence", message: "Previous daily candle agrees with the setup direction." });
+  }
+  if (absorption) {
+    out.push({ id: "PB-CF-ABSORPTION", severity: "confluence", message: `Absorption/stagnation detected at zone (score ${absorptionScore ?? 0}) — opposing side absorbing orders.` });
   }
 
   const confluences = out.filter((r) => r.severity === "confluence").length;
