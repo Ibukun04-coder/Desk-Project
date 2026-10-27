@@ -30,6 +30,8 @@ export type ChartCandle = {
 type PairChartProps = {
   candles: ChartCandle[];
   smc: SmcSnapshot | null;
+  sweeps: SmcSnapshot["sweeps"];
+  runs: SmcSnapshot["runs"];
 };
 
 export const BULL_FVG_FILL = "rgba(16,185,129,0.14)";
@@ -40,6 +42,19 @@ export const DEMAND_FILL = "rgba(56,189,248,0.16)";
 export const DEMAND_BORDER = "rgba(56,189,248,0.65)";
 export const SUPPLY_FILL = "rgba(168,85,247,0.16)";
 export const SUPPLY_BORDER = "rgba(168,85,247,0.65)";
+
+// Sweep markers (rejection / stop-hunt): amber, downward chevron (buy-side
+// sweep → price rejected) or upward chevron (sell-side sweep → price rejected).
+export const SWEEP_FILL = "rgba(251,191,36,0.18)";
+export const SWEEP_BORDER = "rgba(251,191,36,0.6)";
+export const SWEEP_TEXT = "#f59e0b";
+
+// Run markers (continuation fuel): emerald/rose arrows continuing in the
+// breakout direction. Slightly more muted so they sit behind FVG/OB zones.
+export const RUN_BULL_FILL = "rgba(34,197,94,0.10)";
+export const RUN_BULL_BORDER = "rgba(34,197,94,0.45)";
+export const RUN_BEAR_FILL = "rgba(239,68,68,0.10)";
+export const RUN_BEAR_BORDER = "rgba(239,68,68,0.45)";
 
 function toTime(epoch: number): UTCTimestamp {
   return epoch as UTCTimestamp;
@@ -144,6 +159,26 @@ export function PairChart({ candles, smc }: PairChartProps) {
         title: "mid (premium/discount)",
       }) as unknown as { remove: () => void };
     }
+    // Asia session high/low price lines (most recent day only).
+    if (smc?.asia?.length) {
+      const last = smc.asia[smc.asia.length - 1];
+      series.createPriceLine({
+        price: last.high,
+        color: "rgba(56,189,248,0.7)",
+        lineWidth: 1,
+        lineStyle: 3,
+        axisLabelVisible: true,
+        title: "Asia H",
+      });
+      series.createPriceLine({
+        price: last.low,
+        color: "rgba(56,189,248,0.7)",
+        lineWidth: 1,
+        lineStyle: 3,
+        axisLabelVisible: true,
+        title: "Asia L",
+      });
+    }
 
     // BOS (last 3) + CHOCH (last 3) markers.
     const markers: SeriesMarker<Time>[] = [];
@@ -166,8 +201,51 @@ export function PairChart({ candles, smc }: PairChartProps) {
           text: `CHOCH ${c.direction === "bullish" ? "+" : "-"}`,
         });
       }
-      markers.sort((a, b) => (a.time as number) - (b.time as number));
+      // Sweep (rejection) markers: amber chevrons pointing back inside the level.
+      for (const s of smc.sweeps.slice(-3)) {
+        markers.push({
+          time: toTime(s.epoch),
+          position: s.direction === "bullish" ? "aboveBar" : "belowBar",
+          color: SWEEP_TEXT,
+          shape: "arrowDown",
+          text: `SWEEP ${s.direction === "bullish" ? "&#9660;" : "&#9650;"}`,
+        });
+      }
+      // Run (continuation) markers: directional arrows.
+      for (const r of smc.runs.slice(-3)) {
+        markers.push({
+          time: toTime(r.epoch),
+          position: r.direction === "bullish" ? "belowBar" : "aboveBar",
+          color: r.direction === "bullish" ? "#22c55e" : "#f43f5e",
+          shape: r.direction === "bullish" ? "arrowUp" : "arrowDown",
+          text: `RUN ${r.direction === "bullish" ? "&#8594;" : "&#8592;"}`,
+        });
+      }
+      // Asia sweep markers.
+      if (smc?.asia) {
+        for (const a of smc.asia) {
+          if (a.sweptHigh && a.sweepHighTime) {
+            markers.push({
+              time: toTime(new Date(a.sweepHighTime).getTime() / 1000),
+              position: "aboveBar",
+              color: "#38bdf8",
+              shape: "arrowDown",
+              text: "Asia H swept",
+            });
+          }
+          if (a.sweptLow && a.sweepLowTime) {
+            markers.push({
+              time: toTime(new Date(a.sweepLowTime).getTime() / 1000),
+              position: "belowBar",
+              color: "#38bdf8",
+              shape: "arrowUp",
+              text: "Asia L swept",
+            });
+          }
+        }
+      }
     }
+    markers.sort((a, b) => (a.time as number) - (b.time as number));
     createSeriesMarkers(series, markers);
 
     chart.timeScale().fitContent();
@@ -181,7 +259,7 @@ export function PairChart({ candles, smc }: PairChartProps) {
         <span><span className="mr-1 inline-block h-2 w-3 rounded-sm" style={{ background: BEAR_FVG_FILL, border: `1px solid ${BEAR_FVG_BORDER}` }} />bearish FVG</span>
         <span><span className="mr-1 inline-block h-2 w-3 rounded-sm" style={{ background: DEMAND_FILL, border: `1px solid ${DEMAND_BORDER}` }} />demand OB</span>
         <span><span className="mr-1 inline-block h-2 w-3 rounded-sm" style={{ background: SUPPLY_FILL, border: `1px solid ${SUPPLY_BORDER}` }} />supply OB</span>
-        <span className="text-slate-500">▲/▼ BOS · ○ CHOCH · dashed = premium/discount mid</span>
+        <span className="text-slate-500">BOS/CHOCH &#10003; SWEEP amber RUN emerald-rose dashed = premium/discount mid</span>
       </div>
     </div>
   );

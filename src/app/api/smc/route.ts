@@ -10,6 +10,8 @@ import { MIN_CANDLES_FOR_SMC, detectSmc } from "@/lib/smc/detect";
 import { rankSetups } from "@/lib/smc/setups";
 import { evaluatePlaybook } from "@/lib/playbook/evaluate";
 import { derivePlaybookInput } from "@/lib/playbook/derive";
+import { getLatestDailyBias } from "@/lib/data/daily-bias";
+import { serializeDailyBias } from "@/lib/api/daily-bias";
 
 // GET /api/smc?symbol=EURUSD&timeframe=H1 → { smc, setups, bias }.
 // Candles are read through the existing getCandles (no second reader).
@@ -30,16 +32,17 @@ export async function GET(request: Request) {
   try {
     const { symbol, timeframe, limit } = parsed.data;
     const modes = getProviderModes();
-    const [candles, bias] = await Promise.all([
+    const [candles, bias, dailyBias] = await Promise.all([
       getCandles({ symbol, timeframe, limit }),
       getLatestBias(symbol),
+      getLatestDailyBias(symbol),
     ]);
     const smc = detectSmc(symbol, timeframe, candles);
     const { setups, alignment } = rankSetups(
       smc,
       bias ? { bias: bias.bias, confidence: bias.confidence } : null,
     );
-    const playbookInput = derivePlaybookInput(symbol, timeframe, candles, smc, bias, Date.now());
+    const playbookInput = derivePlaybookInput(symbol, timeframe, candles, smc, bias, dailyBias, Date.now());
     const playbook = evaluatePlaybook(playbookInput);
     const serializedBias = bias ? serializeBiasResult(bias) : null;
     return NextResponse.json({
@@ -47,6 +50,7 @@ export async function GET(request: Request) {
       playbook,
       alignment,
       bias: serializedBias,
+      dailyBias: dailyBias ? serializeDailyBias(dailyBias) : null,
       mock: modes.price.mode === "mock",
       providers: { price: modes.price.name, calendar: modes.calendar.name, news: modes.news.name },
       message: candles.length < MIN_CANDLES_FOR_SMC ? "insufficient candles" : null,

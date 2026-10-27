@@ -4,6 +4,7 @@ import { atr, toNumericCandles } from "@/lib/smc/swings";
 import type { SmcSnapshot } from "@/lib/smc/types";
 import type { CalendarEventInput, LastBosMap, BreakInput, ShiftInput, SweepInput, ZoneInput, PoolInput, DealingRangeInput, M15ZoneInput, FundamentalInput } from "./evaluate";
 import type { BiasResult } from "@/lib/data/bias";
+import type { DailyBiasResult } from "@/lib/data/daily-bias";
 
 export function derivePlaybookInput(
   pair: Pair,
@@ -11,6 +12,7 @@ export function derivePlaybookInput(
   candles: { openTime: string; open: string; high: string; low: string; close: string }[],
   smc: SmcSnapshot,
   bias: BiasResult | null,
+  dailyBias: DailyBiasResult | null,
   now: number,
 ): PlaybookInput {
   const numeric = toNumericCandles(candles);
@@ -71,13 +73,18 @@ export function derivePlaybookInput(
     ? { high: smc.range.high, low: smc.range.low, bothExtremesSwept: false }
     : null;
 
+  // Map daily bias direction to playbook previousDay (long/short/null).
+  const previousDay = dailyBias
+    ? (dailyBias.bias === "bullish" ? "long" : dailyBias.bias === "bearish" ? "short" : null)
+    : null;
+
   return {
     pair,
     timeframe,
     now,
     atr14,
     fundamental,
-    previousDay: null,
+    previousDay,
     calendar,
     lastBos,
     recentBreaks,

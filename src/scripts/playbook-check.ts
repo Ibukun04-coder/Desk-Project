@@ -29,7 +29,7 @@ const mockBias: BiasResult = {
 };
 
 function baseInput(overrides: Partial<Parameters<typeof evaluatePlaybook>[0]>): Parameters<typeof evaluatePlaybook>[0] {
-  const derived = derivePlaybookInput("EURUSD", "H1", buildDownImpulseFixture(), downSmc, mockBias, NOW);
+  const derived = derivePlaybookInput("EURUSD", "H1", buildDownImpulseFixture(), downSmc, mockBias, null, NOW);
   return { ...derived, ...overrides } as Parameters<typeof evaluatePlaybook>[0];
 }
 

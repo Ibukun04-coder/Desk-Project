@@ -2,6 +2,8 @@ import { NextResponse, type NextRequest } from "next/server";
 import { internalError, parseQuery } from "@/lib/api";
 import { biasQuerySchema, serializeBiasResult } from "@/lib/api/bias";
 import { getBiasSnapshots, getLatestBias } from "@/lib/data/bias";
+import { getAllDailyBias, getLatestDailyBias } from "@/lib/data/daily-bias";
+import { serializeDailyBias } from "@/lib/api/daily-bias";
 import { getProviderModes } from "@/lib/data/config";
 import { PAIRS } from "@/lib/data/universe";
 
@@ -13,15 +15,20 @@ export async function GET(request: NextRequest) {
     const modes = getProviderModes();
     const providers = { price: modes.price.name, calendar: modes.calendar.name, news: modes.news.name };
     const llmActive = Boolean(process.env.OPENAI_API_KEY || process.env.XAI_API_KEY || process.env.GROK_API_KEY);
+    const allDaily = await getAllDailyBias();
+    const dailyByPair = new Map(allDaily.map((d) => [d.pair, d]));
     if (data.pair) {
-      const result = await getLatestBias(data.pair);
+      const [result, daily] = await Promise.all([
+        getLatestBias(data.pair),
+        getLatestDailyBias(data.pair),
+      ]);
       if (!result) {
         return NextResponse.json(
           { error: `No bias snapshot for pair "${data.pair}". Run POST /api/bias/recompute first.`, computedFrom: "stored news + calendar", pair: data.pair },
           { status: 404 },
         );
       }
-      return NextResponse.json({ ...serializeBiasResult(result), computedFrom: "stored news + calendar", providers, llmActive });
+      return NextResponse.json({ ...serializeBiasResult(result, daily ? serializeDailyBias(daily) : null), computedFrom: "stored news + calendar", providers, llmActive });
     }
     const snapshots = await getBiasSnapshots();
     const byPair = new Map(snapshots.map((s) => [s.pair, s]));
@@ -30,7 +37,19 @@ export async function GET(request: NextRequest) {
         const s = byPair.get(pair);
         return s
           ? { ...serializeBiasResult(s), computedFrom: "stored news + calendar" as const }
-          : { pair, bias: "neutral" as const, confidence: 0, drivers: [], nextEvent: null, invalidation: "No bias computed yet.", asOf: null, method: "rules-v1" as const, usedLlm: false, computedFrom: "stored news + calendar" as const };
+          : {
+              pair,
+              bias: "neutral" as const,
+              confidence: 0,
+              drivers: [],
+              nextEvent: null,
+              invalidation: "No bias computed yet.",
+              asOf: null,
+              method: "rules-v1" as const,
+              usedLlm: false,
+              dailyBias: dailyByPair.get(pair) ? serializeDailyBias(dailyByPair.get(pair)!) : null,
+              computedFrom: "stored news + calendar" as const,
+            };
       }),
       providers,
       llmActive,

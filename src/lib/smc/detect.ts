@@ -4,6 +4,7 @@ import { atr, findSwings, toNumericCandles } from "./swings";
 import { computeRange, detectLiquidity } from "./liquidity";
 import { detectStructure } from "./structure";
 import { detectFvgs, detectOrderBlocks } from "./structure-zones";
+import { detectAsiaLiquidity } from "./asia";
 
 // Orchestrator: candles (oldest → newest) → SmcSnapshot. Pure + total.
 
@@ -21,6 +22,7 @@ export function emptySnapshot(symbol: Pair, timeframe: Timeframe, candleCount: n
     candleCount,
     swings: [], bos: [], choch: [],
     fvgs: [], orderBlocks: [], liquidity: [],
+    sweeps: [], runs: [], asia: [],
     range: null, htfBias: "range",
   };
 }
@@ -37,6 +39,11 @@ export function detectSmc(symbol: Pair, timeframe: Timeframe, input: SmcCandleIn
   const allSwings = findSwings(candles);
   const { bos, choch, htfBias } = detectStructure(candles, allSwings);
   const atrValue = atr(candles);
+  const fvgs = detectFvgs(candles).slice(-MAX_FVGS);
+  const liquidity = detectLiquidity(candles, allSwings, atrValue);
+  const asia = (timeframe === "M15" || timeframe === "H1" || timeframe === "H4")
+    ? detectAsiaLiquidity(candles)
+    : [];
   return {
     symbol, timeframe,
     asOf: new Date().toISOString(),
@@ -44,9 +51,12 @@ export function detectSmc(symbol: Pair, timeframe: Timeframe, input: SmcCandleIn
     swings: allSwings.slice(-MAX_SWINGS),
     bos: bos.slice(-MAX_STRUCTURE_EVENTS),
     choch: choch.slice(-MAX_STRUCTURE_EVENTS),
-    fvgs: detectFvgs(candles).slice(-MAX_FVGS),
-    orderBlocks: detectOrderBlocks(candles, bos).slice(-MAX_ORDER_BLOCKS),
-    liquidity: detectLiquidity(allSwings, atrValue).slice(0, MAX_LIQUIDITY),
+    fvgs,
+    orderBlocks: detectOrderBlocks(candles, bos, fvgs, htfBias).slice(-MAX_ORDER_BLOCKS),
+    liquidity: liquidity.levels.slice(0, MAX_LIQUIDITY),
+    sweeps: liquidity.sweeps.slice(0, MAX_LIQUIDITY),
+    runs: liquidity.runs.slice(0, MAX_LIQUIDITY),
+    asia,
     range: computeRange(allSwings),
     htfBias,
   };

@@ -1,6 +1,7 @@
 import type {
-  BreakEvent, FairValueGap, LiquidityLevel, NumericCandle,
+  BreakEvent, FairValueGap, HtfBias, LiquidityLevel, NumericCandle,
   OrderBlock, SmcRange, Swing,
+  StructureDirection,
 } from "./types";
 
 // FVG / order-block / liquidity / range. Pure + deterministic.
@@ -13,7 +14,7 @@ const OB_LOOKBACK = 8;
  * mirror). Zone = that candle's [low, high]. Mitigated when a later candle
  * trades through 50% of the zone (wick counts).
  */
-export function detectOrderBlocks(candles: NumericCandle[], bosEvents: BreakEvent[]): OrderBlock[] {
+export function detectOrderBlocks(candles: NumericCandle[], bosEvents: BreakEvent[], fvgs: FairValueGap[] = [], htfBias: HtfBias = "range"): OrderBlock[] {
   const blocks: OrderBlock[] = [];
   for (const ev of bosEvents) {
     const bullish = ev.direction === "bullish";
@@ -35,7 +36,7 @@ export function detectOrderBlocks(candles: NumericCandle[], bosEvents: BreakEven
     blocks.push({
       index: origin.index, time: origin.time, epoch: origin.epoch,
       low, high, direction: ev.direction,
-      kind: bullish ? "demand" : "supply", mitigated,
+      kind: bullish ? "demand" : "supply", mitigated, quality: "normal",
     });
   }
   return blocks.sort((a, b) => a.index - b.index);

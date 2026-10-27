@@ -3,6 +3,8 @@ import { BiasCard } from "@/components/BiasCard";
 import { PAIRS } from "@/lib/data/universe";
 import { getProviderModes } from "@/lib/data/config";
 import { getBiasSnapshots } from "@/lib/data/bias";
+import { getAllDailyBias } from "@/lib/data/daily-bias";
+import { serializeDailyBias } from "@/lib/api/daily-bias";
 import { serializeBiasResult } from "@/lib/api/bias";
 import { RecomputeButton } from "./RecomputeButton";
 
@@ -14,6 +16,8 @@ export default async function BiasPage() {
   const llmActive = Boolean(process.env.OPENAI_API_KEY || process.env.XAI_API_KEY || process.env.GROK_API_KEY);
   const snapshots = await getBiasSnapshots();
   const byPair = new Map(snapshots.map((s) => [s.pair, s]));
+  const allDaily = await getAllDailyBias();
+  const dailyByPair = new Map(allDaily.map((d) => [d.pair, d]));
 
   return (
     <div className="min-h-screen bg-slate-950 p-4 sm:p-6">
@@ -37,8 +41,19 @@ export default async function BiasPage() {
                   pair={pair}
                   biasResult={
                     s
-                      ? serializeBiasResult(s)
-                      : { pair, bias: "neutral", confidence: 0, drivers: [], nextEvent: null, invalidation: "Not yet computed — press Recompute bias.", asOf: new Date().toISOString(), method: "rules-v1", usedLlm: false }
+                      ? serializeBiasResult(s, dailyByPair.get(pair) ? serializeDailyBias(dailyByPair.get(pair)!) : null)
+                      : {
+                          pair,
+                          bias: "neutral",
+                          confidence: 0,
+                          drivers: [],
+                          nextEvent: null,
+                          invalidation: "Not yet computed — press Recompute bias.",
+                          asOf: new Date().toISOString(),
+                          method: "rules-v1",
+                          usedLlm: false,
+                          dailyBias: null,
+                        }
                   }
                   providers={providers}
                   llmActive={llmActive}

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { PAIRS } from "@/lib/data/universe";
 import type { BiasResult } from "@/lib/data/bias";
+import type { DailyBiasApiResult } from "@/lib/api/daily-bias";
 
 export const biasQuerySchema = z.object({ pair: z.enum(PAIRS).optional() });
 
@@ -18,9 +19,11 @@ export type BiasApiResult = Omit<BiasResult, "asOf" | "nextEvent"> & {
     previous: string | null;
     actual: string | null;
   } | null;
+  /** Phase 6: daily bias filter (higher-timeframe, from previous daily candle). */
+  dailyBias: DailyBiasApiResult | null;
 };
 
-export function serializeBiasResult(r: BiasResult): BiasApiResult {
+export function serializeBiasResult(r: BiasResult, dailyBias?: DailyBiasApiResult | null): BiasApiResult {
   return {
     pair: r.pair,
     bias: r.bias,
@@ -41,6 +44,7 @@ export function serializeBiasResult(r: BiasResult): BiasApiResult {
     asOf: r.asOf.toISOString(),
     method: r.method,
     usedLlm: r.usedLlm,
+    dailyBias: dailyBias ?? null,
   };
 }
 

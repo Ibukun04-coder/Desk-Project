@@ -64,7 +64,7 @@ export async function computePlaybookVerdict(input: VerdictInput): Promise<Verdi
     getLatestBias(input.pair),
   ]);
   const smc = detectSmc(input.pair, input.timeframe, candles);
-  const playbookInput = derivePlaybookInput(input.pair, input.timeframe, candles, smc, bias, Date.now());
+  const playbookInput = derivePlaybookInput(input.pair, input.timeframe, candles, smc, bias, null, Date.now());
   const result = evaluatePlaybook(playbookInput);
 
 

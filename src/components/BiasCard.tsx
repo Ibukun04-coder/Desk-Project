@@ -1,4 +1,5 @@
 import type { BiasApiResult } from "@/lib/api/bias";
+import type { DailyBiasApiResult } from "@/lib/api/daily-bias";
 import { PAIRS, PAIR_DISPLAY } from "@/lib/data/universe";
 
 export function BiasChip({ bias }: { bias: BiasApiResult["bias"] }) {
@@ -59,6 +60,7 @@ export function BiasCard({
   providers: { price: string; calendar: string; news: string };
   llmActive: boolean;
 }) {
+  const daily = biasResult.dailyBias;
   return (
     <section className="rounded-xl border border-slate-800 bg-slate-900/60 p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -83,6 +85,38 @@ export function BiasCard({
             </li>
           ))}
         </ul>
+      )}
+
+      {daily && (
+        <section className="mt-4 rounded-md border border-sky-500/30 bg-sky-500/5 px-4 py-3">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <div className="text-sm text-sky-200">
+              <span className="font-medium">Daily Bias:</span>
+              <span
+                className={`ml-2 px-2 py-0.5 rounded text-xs font-semibold uppercase ${
+                  daily.bias === "bullish"
+                    ? "bg-emerald-500/20 text-emerald-400"
+                    : daily.bias === "bearish"
+                      ? "bg-rose-500/20 text-rose-400"
+                      : "bg-slate-500/20 text-slate-400"
+                }`}
+              >
+                {daily.bias === "bullish" ? "BULLISH" : daily.bias === "bearish" ? "BEARISH" : "NEUTRAL"}
+              </span>
+              <span className="text-slate-400">· strength {daily.strength}%</span>
+            </div>
+            <div className="text-xs text-slate-400">
+              {daily.asOf.slice(0, 10)} UTC
+            </div>
+          </div>
+          <p className="mt-1 text-xs text-slate-400">
+            Prev day: O {daily.previousDay.open} H {daily.previousDay.high} L {daily.previousDay.low} C {daily.previousDay.close}
+          </p>
+          <p className="mt-1 text-xs text-slate-400">
+            Liquidity taken: {daily.liquidity.liquidityTaken} · left: {daily.liquidity.liquidityLeft}
+          </p>
+          <p className="mt-1 text-xs text-slate-500">{daily.invalidation}</p>
+        </section>
       )}
 
       {biasResult.nextEvent && (

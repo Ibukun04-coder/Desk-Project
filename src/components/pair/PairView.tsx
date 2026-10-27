@@ -7,6 +7,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { PAIRS, PAIR_DISPLAY, TIMEFRAMES, type Pair, type Timeframe } from "@/lib/data/universe";
 import type { BiasApiResult } from "@/lib/api/bias";
+import type { DailyBiasApiResult } from "@/lib/api/daily-bias";
 import type { Alignment, SmcSnapshot } from "@/lib/smc/types";
 import type { PlaybookResult, PlaybookRuleSeverity } from "@/lib/playbook/evaluate";
 import { BiasCard } from "@/components/BiasCard";
@@ -17,6 +18,7 @@ export type SmcResponse = {
   playbook: PlaybookResult;
   alignment: Alignment;
   bias: BiasApiResult | null;
+  dailyBias: DailyBiasApiResult | null;
   mock: boolean;
   providers: { price: string; calendar: string; news: string };
   message: string | null;
@@ -78,6 +80,7 @@ export function PairView({ symbol, initialTimeframe }: { symbol: Pair; initialTi
   const [playbook, setPlaybook] = useState<PlaybookResult | null>(null);
   const [alignment, setAlignment] = useState<Alignment>("DO_NOT_TRADE");
   const [bias, setBias] = useState<BiasApiResult | null>(null);
+  const [dailyBias, setDailyBias] = useState<DailyBiasApiResult | null>(null);
   const [mock, setMock] = useState(false);
   const [providers, setProviders] = useState({ price: "mock", calendar: "mock", news: "mock" });
   const [loading, setLoading] = useState(true);
@@ -100,6 +103,7 @@ export function PairView({ symbol, initialTimeframe }: { symbol: Pair; initialTi
       setPlaybook(sBody.playbook);
       setAlignment(sBody.alignment);
       setBias(sBody.bias);
+      setDailyBias(sBody.dailyBias);
       setMock(sBody.mock);
       if (sBody.providers) setProviders(sBody.providers);
     } catch (err) {
@@ -172,7 +176,7 @@ export function PairView({ symbol, initialTimeframe }: { symbol: Pair; initialTi
           ) : candles.length === 0 ? (
             <p className="py-24 text-center text-sm text-slate-500">No candles stored for {symbol} {timeframe}. Run ingest first.</p>
           ) : (
-            <PairChart candles={candles} smc={smc} />
+            <PairChart candles={candles} smc={smc} sweeps={smc ? smc.sweeps : []} runs={smc ? smc.runs : []} />
           )}
           {smc && (
             <p className="mt-2 text-xs text-slate-500">
@@ -182,6 +186,25 @@ export function PairView({ symbol, initialTimeframe }: { symbol: Pair; initialTi
         </div>
 
         <aside className="min-w-0 space-y-4">
+          {dailyBias ? (
+            <section className="rounded-xl border border-sky-500/30 bg-sky-500/5 p-4">
+              <h3 className="text-[10px] uppercase font-semibold text-sky-400 mb-2">Daily Bias</h3>
+              <p className="text-sm text-slate-300">
+                <span className={`font-medium ${dailyBias.bias === "bullish" ? "text-emerald-400" : dailyBias.bias === "bearish" ? "text-rose-400" : "text-slate-400"}`}>
+                  {dailyBias.bias.toUpperCase()}
+                </span>
+                {" · strength "}
+                <span className="font-mono text-slate-300">{dailyBias.strength}%</span>
+              </p>
+              <p className="mt-1 text-xs text-slate-400">
+                Prev day: O {dailyBias.previousDay.open} H {dailyBias.previousDay.high} L {dailyBias.previousDay.low} C {dailyBias.previousDay.close}
+              </p>
+              <p className="mt-1 text-xs text-slate-400">
+                Liquidity taken: {dailyBias.liquidity.liquidityTaken} · left: {dailyBias.liquidity.liquidityLeft}
+              </p>
+              <p className="mt-1 text-xs text-slate-500">{dailyBias.invalidation}</p>
+            </section>
+          ) : null}
           {bias ? (
             <BiasCard pair={symbol} biasResult={bias} providers={providers} llmActive={bias.usedLlm} />
           ) : (

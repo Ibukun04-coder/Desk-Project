@@ -111,6 +111,41 @@ model BiasSnapshot {
   @@index([pair, createdAt])
 }
 
+// Phase 6 daily bias: higher-timeframe directional filter based on the
+// previous completed daily candle and liquidity left behind.
+// Computed once per day per pair; acts as an additional filter on top of
+// Phase 2 news/calendar bias — never replaces it.
+model DailyBias {
+  id            String   @id @default(cuid())
+  pair          String   // EURUSD | GBPUSD | USDJPY | XAUUSD
+  bias          String   // bullish | bearish | neutral
+  confidence    Int      // 0-100
+  strength      Int      // 0-100 (previous day body strength)
+  previousDayOpen  String
+  previousDayHigh   String
+  previousDayLow    String
+  previousDayClose  String
+  bodyDirection     String // bullish | bearish | neutral
+  bodyStrength      String // 0-1 decimal string
+  closePosition     String // 0-1 decimal string (where close sits in range)
+  liquidityTaken    String // none | buySide | sellSide | both
+  liquidityLeft     String // none | buySide | sellSide | both
+  pdh               String // previous day high
+  pdl               String // previous day low
+  eqh               String? // equal highs level (nullable)
+  eql               String? // equal lows level (nullable)
+  invalidation      String
+  method          String   // rules-v1
+  asOf       DateTime // the date of the previous completed daily candle (UTC midnight)
+  createdAt  DateTime @default(now())
+  liquiditySweeps  Json?   // { index, time, epoch, price, direction, sweptLevel, closeInside }[]
+  liquidityRuns    Json?   // { index, time, epoch, price, direction, brokenLevel, continuation }[]
+  liquidityDigest  String? // cached JSON.stringify([...sweeper, ...runs]) for cheap change detection
+
+  @@unique([pair, asOf])
+  @@index([pair, createdAt])
+}
+
 // Phase 5 paper journal: a setup logged with the analysis that justified it,
 // then closed later with an outcome. ANALYSIS ONLY — nothing here places or
 // simulates a fill. History is a snapshot: bias/playbook/SMC are copied at
