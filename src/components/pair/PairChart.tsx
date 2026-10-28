@@ -130,7 +130,8 @@ export function PairChart({ candles, smc }: PairChartProps) {
           border: bullish ? BULL_FVG_BORDER : BEAR_FVG_BORDER,
         });
       }
-      for (const o of smc.orderBlocks) {
+      const highQualityObs = smc.orderBlocks.filter((o) => o.quality === "high-probability");
+      for (const o of highQualityObs) {
         const demand = o.kind === "demand";
         zones.push({
           startTime: toTime(o.epoch),

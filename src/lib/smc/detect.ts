@@ -133,7 +133,7 @@ export function emptySnapshot(symbol: Pair, timeframe: Timeframe, candleCount: n
     : [];
 
   // Detect order blocks
-  const orderBlocks = detectOrderBlocks(candles, bos, fvgs, htfBias).slice(-MAX_ORDER_BLOCKS);
+  const orderBlocks = detectOrderBlocks(candles, bos, fvgs, htfBias, liquidity.sweeps, liquidity.runs).slice(-MAX_ORDER_BLOCKS);
 
   // --- Absorption/stagnation detection ---
   // Detect absorption for the most recent order block
